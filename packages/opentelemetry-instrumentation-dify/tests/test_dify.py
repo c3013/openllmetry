@@ -45,7 +45,7 @@ def test_completion_blocking(span_exporter):
 
     span = spans[0]
     assert span.name == "dify.completion"
-    assert span.attributes["llm.system"] == "Dify"
+    assert span.attributes["gen_ai.system"] == "Dify"
     assert span.attributes["llm.request.type"] == "completion"
     assert span.attributes["gen_ai.response.id"] == "msg-123"
     assert span.attributes["gen_ai.usage.total_tokens"] == 30
@@ -91,7 +91,7 @@ def test_chat_blocking(span_exporter):
 
     span = spans[0]
     assert span.name == "dify.chat"
-    assert span.attributes["llm.system"] == "Dify"
+    assert span.attributes["gen_ai.system"] == "Dify"
     assert span.attributes["llm.request.type"] == "chat"
     assert span.attributes["gen_ai.response.id"] == "msg-456"
     assert span.attributes["gen_ai.response.conversation_id"] == "conv-789"

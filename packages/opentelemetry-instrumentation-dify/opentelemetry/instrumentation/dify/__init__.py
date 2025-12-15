@@ -105,17 +105,17 @@ def _wrap_completion_message(tracer, duration_histogram: Histogram, token_histog
         files = kwargs.get("files")
 
         span_name = "dify.completion"
-        
+
         with tracer.start_as_current_span(
             span_name,
             kind=SpanKind.CLIENT,
         ) as span:
             start_time = time.time()
-            
+
             # Set span attributes
             span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
             span.set_attribute(SpanAttributes.LLM_REQUEST_TYPE, LLMRequestTypeValues.COMPLETION.value)
-            
+
             # Set request attributes
             request_attributes = get_llm_request_attributes(
                 inputs=inputs,
@@ -128,7 +128,7 @@ def _wrap_completion_message(tracer, duration_histogram: Histogram, token_histog
 
             try:
                 response = wrapped(*args, **kwargs)
-                
+
                 # Handle streaming vs blocking
                 if response_mode == "streaming":
                     # For streaming, we wrap the response
@@ -142,15 +142,15 @@ def _wrap_completion_message(tracer, duration_histogram: Histogram, token_histog
                 else:
                     # For blocking, process the response
                     duration = time.time() - start_time
-                    
+
                     try:
                         response_json = response.json()
-                        
+
                         # Set response attributes
                         response_attributes = get_llm_response_attributes(response_json)
                         for key, value in response_attributes.items():
                             set_span_attribute(span, key, value)
-                        
+
                         # Record metrics
                         _record_metrics(
                             duration_histogram,
@@ -159,19 +159,19 @@ def _wrap_completion_message(tracer, duration_histogram: Histogram, token_histog
                             response_json,
                             span_name,
                         )
-                        
+
                         span.set_status(Status(StatusCode.OK))
                     except Exception as e:
                         logger.debug("Error processing Dify response: %s", e)
                         span.set_status(Status(StatusCode.ERROR, str(e)))
-                    
+
                     return response
-                    
+
             except Exception as e:
                 duration = time.time() - start_time
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                
+
                 # Record error metrics
                 duration_histogram.record(
                     duration,
@@ -202,20 +202,20 @@ def _wrap_chat_message(tracer, duration_histogram: Histogram, token_histogram: H
         files = kwargs.get("files")
 
         span_name = "dify.chat"
-        
+
         with tracer.start_as_current_span(
             span_name,
             kind=SpanKind.CLIENT,
         ) as span:
             start_time = time.time()
-            
+
             # Set span attributes
             span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
             span.set_attribute(SpanAttributes.LLM_REQUEST_TYPE, LLMRequestTypeValues.CHAT.value)
-            
+
             if conversation_id:
                 span.set_attribute("gen_ai.conversation_id", conversation_id)
-            
+
             # Set request attributes
             request_attributes = get_llm_request_attributes(
                 inputs=inputs,
@@ -229,7 +229,7 @@ def _wrap_chat_message(tracer, duration_histogram: Histogram, token_histogram: H
 
             try:
                 response = wrapped(*args, **kwargs)
-                
+
                 # Handle streaming vs blocking
                 if response_mode == "streaming":
                     # For streaming, we wrap the response
@@ -243,15 +243,15 @@ def _wrap_chat_message(tracer, duration_histogram: Histogram, token_histogram: H
                 else:
                     # For blocking, process the response
                     duration = time.time() - start_time
-                    
+
                     try:
                         response_json = response.json()
-                        
+
                         # Set response attributes
                         response_attributes = get_llm_response_attributes(response_json)
                         for key, value in response_attributes.items():
                             set_span_attribute(span, key, value)
-                        
+
                         # Record metrics
                         _record_metrics(
                             duration_histogram,
@@ -260,19 +260,19 @@ def _wrap_chat_message(tracer, duration_histogram: Histogram, token_histogram: H
                             response_json,
                             span_name,
                         )
-                        
+
                         span.set_status(Status(StatusCode.OK))
                     except Exception as e:
                         logger.debug("Error processing Dify response: %s", e)
                         span.set_status(Status(StatusCode.ERROR, str(e)))
-                    
+
                     return response
-                    
+
             except Exception as e:
                 duration = time.time() - start_time
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                
+
                 # Record error metrics
                 duration_histogram.record(
                     duration,
@@ -312,17 +312,17 @@ class _StreamingResponseWrapper:
     def __next__(self):
         try:
             line = next(self._response.iter_lines(decode_unicode=True))
-            
+
             if line:
                 parsed = parse_streaming_response(line)
                 if parsed:
                     # Store for final processing
                     self._response_json = parsed
-                    
+
                     # Collect answer chunks
                     if "answer" in parsed:
                         self._response_text.append(parsed["answer"])
-            
+
             return line
         except StopIteration:
             # Stream ended, finalize span
@@ -338,23 +338,23 @@ class _StreamingResponseWrapper:
                     self._response_json = parsed
                     if "answer" in parsed:
                         self._response_text.append(parsed["answer"])
-            
+
             yield line
-        
+
         # Finalize when iteration is complete
         self._finalize()
 
     def _finalize(self):
         """Finalize the span with collected metrics and attributes."""
         duration = time.time() - self._start_time
-        
+
         if self._response_json:
             try:
                 # Set response attributes
                 response_attributes = get_llm_response_attributes(self._response_json)
                 for key, value in response_attributes.items():
                     set_span_attribute(self._span, key, value)
-                
+
                 # Record metrics
                 span_name = self._span.name
                 _record_metrics(
@@ -364,14 +364,14 @@ class _StreamingResponseWrapper:
                     self._response_json,
                     span_name,
                 )
-                
+
                 self._span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.debug("Error finalizing streaming response: %s", e)
                 self._span.set_status(Status(StatusCode.ERROR, str(e)))
         else:
             self._span.set_status(Status(StatusCode.OK))
-        
+
         self._span.end()
 
     def raise_for_status(self):
@@ -392,14 +392,14 @@ def _record_metrics(
 ):
     """Record metrics for a completed LLM operation."""
     attributes = {"gen_ai.operation.name": operation_name}
-    
+
     # Record duration
     duration_histogram.record(duration, attributes=attributes)
-    
+
     # Record token usage
     metadata = response_json.get("metadata", {})
     usage = metadata.get("usage", {})
-    
+
     if "prompt_tokens" in usage:
         token_histogram.record(
             usage["prompt_tokens"],
@@ -408,7 +408,7 @@ def _record_metrics(
                 "gen_ai.token.type": "input",
             },
         )
-    
+
     if "completion_tokens" in usage:
         token_histogram.record(
             usage["completion_tokens"],
