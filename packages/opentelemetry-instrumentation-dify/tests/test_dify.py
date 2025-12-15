@@ -1,7 +1,5 @@
 """Tests for Dify instrumentation"""
 
-import json
-
 import pytest
 import requests_mock
 from dify_client import ChatClient, CompletionClient
@@ -166,7 +164,7 @@ def test_trace_content_disabled(span_exporter, monkeypatch):
         }
         m.post("https://api.dify.ai/v1/chat-messages", json=mock_response)
 
-        response = client.create_chat_message(
+        _ = client.create_chat_message(
             inputs={},
             query="Secret query",
             user="test-user",
