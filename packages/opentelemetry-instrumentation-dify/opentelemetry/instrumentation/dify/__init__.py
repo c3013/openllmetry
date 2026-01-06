@@ -9,6 +9,8 @@ from opentelemetry.instrumentation.dify.utils import (
     dont_throw,
     get_llm_request_attributes,
     get_llm_response_attributes,
+    is_dify_server_available,
+    is_package_available,
     parse_streaming_response,
     set_span_attribute,
 )
@@ -27,7 +29,14 @@ _instruments = ("dify-client >= 0.1.0",)
 
 
 class DifyInstrumentor(BaseInstrumentor):
-    """An instrumentor for Dify SDK."""
+    """An instrumentor for Dify SDK and Server.
+
+    This instrumentor can work with:
+    - dify-client SDK (client-side API calls)
+    - Dify server v1.8.1+ (server-side operations)
+
+    It automatically detects which components are available and instruments them accordingly.
+    """
 
     def __init__(
         self,
@@ -69,6 +78,16 @@ class DifyInstrumentor(BaseInstrumentor):
             description="Measures number of input and output tokens used",
         )
 
+        # Instrument dify-client SDK if available
+        if is_package_available("dify_client"):
+            self._instrument_client(tracer, duration_histogram, token_histogram)
+
+        # Instrument Dify server if available
+        if is_dify_server_available():
+            self._instrument_server(tracer, duration_histogram, token_histogram)
+
+    def _instrument_client(self, tracer, duration_histogram, token_histogram):
+        """Instrument dify-client SDK."""
         # Wrap CompletionClient.create_completion_message
         wrap_function_wrapper(
             module="dify_client.client",
@@ -85,9 +104,113 @@ class DifyInstrumentor(BaseInstrumentor):
             wrapper=_wrap_chat_message(tracer, duration_histogram, token_histogram),
         )
 
+    def _instrument_server(self, tracer, duration_histogram, token_histogram):
+        """Instrument Dify server-side modules."""
+        # Instrument LLM model runtime
+        self._instrument_llm_runtime(tracer, duration_histogram, token_histogram)
+
+        # Instrument workflow execution
+        self._instrument_workflow(tracer, duration_histogram, token_histogram)
+
+        # Instrument RAG/retrieval
+        self._instrument_rag(tracer, duration_histogram, token_histogram)
+
+        # Instrument embeddings
+        self._instrument_embedding(tracer, duration_histogram, token_histogram)
+
+        # Instrument tools
+        self._instrument_tools(tracer, duration_histogram, token_histogram)
+
+    def _instrument_llm_runtime(self, tracer, duration_histogram, token_histogram):
+        """Instrument LLM model runtime."""
+        try:
+            wrap_function_wrapper(
+                module="core.model_runtime.model_providers.__base.large_language_model",
+                name="LargeLanguageModel.invoke",
+                wrapper=_wrap_llm_invoke(tracer, duration_histogram, token_histogram),
+            )
+        except Exception as e:
+            logger.debug("Failed to instrument LLM invoke: %s", e)
+
+    def _instrument_workflow(self, tracer, duration_histogram, token_histogram):
+        """Instrument workflow execution."""
+        try:
+            wrap_function_wrapper(
+                module="core.workflow.graph_engine.graph_engine",
+                name="GraphEngine.run",
+                wrapper=_wrap_workflow_run(tracer),
+            )
+        except Exception as e:
+            logger.debug("Failed to instrument workflow: %s", e)
+
+    def _instrument_rag(self, tracer, duration_histogram, token_histogram):
+        """Instrument RAG/knowledge base retrieval."""
+        try:
+            wrap_function_wrapper(
+                module="core.rag.retrieval.retrieval_methods.retrieval_base",
+                name="RetrievalBase.retrieve",
+                wrapper=_wrap_rag_retrieve(tracer),
+            )
+        except Exception as e:
+            logger.debug("Failed to instrument RAG: %s", e)
+
+    def _instrument_embedding(self, tracer, duration_histogram, token_histogram):
+        """Instrument embedding generation."""
+        try:
+            wrap_function_wrapper(
+                module="core.model_runtime.model_providers.__base.text_embedding_model",
+                name="TextEmbeddingModel.invoke",
+                wrapper=_wrap_embedding_invoke(tracer, token_histogram),
+            )
+        except Exception as e:
+            logger.debug("Failed to instrument embedding: %s", e)
+
+    def _instrument_tools(self, tracer, duration_histogram, token_histogram):
+        """Instrument tool execution."""
+        try:
+            wrap_function_wrapper(
+                module="core.tools.tool_engine",
+                name="ToolEngine.invoke",
+                wrapper=_wrap_tool_invoke(tracer),
+            )
+        except Exception as e:
+            logger.debug("Failed to instrument tools: %s", e)
+
     def _uninstrument(self, **kwargs):
-        unwrap("dify_client.client", "CompletionClient.create_completion_message")
-        unwrap("dify_client.client", "ChatClient.create_chat_message")
+        # Uninstrument client SDK
+        if is_package_available("dify_client"):
+            try:
+                unwrap("dify_client.client", "CompletionClient.create_completion_message")
+                unwrap("dify_client.client", "ChatClient.create_chat_message")
+            except Exception as e:
+                logger.debug("Failed to uninstrument client: %s", e)
+
+        # Uninstrument server
+        if is_dify_server_available():
+            try:
+                unwrap("core.model_runtime.model_providers.__base.large_language_model", "LargeLanguageModel.invoke")
+            except Exception:
+                pass
+
+            try:
+                unwrap("core.workflow.graph_engine.graph_engine", "GraphEngine.run")
+            except Exception:
+                pass
+
+            try:
+                unwrap("core.rag.retrieval.retrieval_methods.retrieval_base", "RetrievalBase.retrieve")
+            except Exception:
+                pass
+
+            try:
+                unwrap("core.model_runtime.model_providers.__base.text_embedding_model", "TextEmbeddingModel.invoke")
+            except Exception:
+                pass
+
+            try:
+                unwrap("core.tools.tool_engine", "ToolEngine.invoke")
+            except Exception:
+                pass
 
 
 def _wrap_completion_message(tracer, duration_histogram: Histogram, token_histogram: Histogram):
@@ -417,3 +540,216 @@ def _record_metrics(
                 "gen_ai.token.type": "output",
             },
         )
+
+
+# Server-side wrappers for Dify 1.8.1+
+
+def _wrap_llm_invoke(tracer, duration_histogram: Histogram, token_histogram: Histogram):
+    """Wrapper for LLM model invocations in Dify server."""
+
+    @dont_throw
+    def wrapper(wrapped, instance, args, kwargs):
+        if _SUPPRESS_INSTRUMENTATION_KEY in kwargs:
+            return wrapped(*args, **kwargs)
+
+        model_name = getattr(instance, 'model', 'unknown')
+        provider_name = getattr(instance, 'provider', 'unknown')
+
+        with tracer.start_as_current_span(
+            "dify.llm.invoke",
+            kind=SpanKind.CLIENT,
+        ) as span:
+            start_time = time.time()
+
+            span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
+            span.set_attribute(SpanAttributes.LLM_REQUEST_TYPE, LLMRequestTypeValues.COMPLETION.value)
+            span.set_attribute("gen_ai.request.model", model_name)
+            span.set_attribute("gen_ai.provider", provider_name)
+
+            try:
+                result = wrapped(*args, **kwargs)
+
+                duration = time.time() - start_time
+                duration_histogram.record(
+                    duration,
+                    attributes={"gen_ai.operation.name": "dify.llm.invoke"},
+                )
+
+                # Extract token usage if available
+                if hasattr(result, 'usage'):
+                    usage = result.usage
+                    if hasattr(usage, 'prompt_tokens'):
+                        token_histogram.record(
+                            usage.prompt_tokens,
+                            attributes={
+                                "gen_ai.operation.name": "dify.llm.invoke",
+                                "gen_ai.token.type": "input",
+                            },
+                        )
+                    if hasattr(usage, 'completion_tokens'):
+                        token_histogram.record(
+                            usage.completion_tokens,
+                            attributes={
+                                "gen_ai.operation.name": "dify.llm.invoke",
+                                "gen_ai.token.type": "output",
+                            },
+                        )
+
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                duration_histogram.record(
+                    duration,
+                    attributes={
+                        "gen_ai.operation.name": "dify.llm.invoke",
+                        "error.type": type(e).__name__,
+                    },
+                )
+                raise
+
+    return wrapper
+
+
+def _wrap_workflow_run(tracer):
+    """Wrapper for workflow execution in Dify server."""
+
+    @dont_throw
+    def wrapper(wrapped, instance, args, kwargs):
+        workflow_id = kwargs.get('workflow_id') or (args[0] if args else 'unknown')
+
+        with tracer.start_as_current_span(
+            "dify.workflow",
+            kind=SpanKind.SERVER,
+        ) as span:
+            span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
+            span.set_attribute("gen_ai.operation.type", "workflow")
+            span.set_attribute("gen_ai.workflow.id", str(workflow_id))
+
+            try:
+                result = wrapped(*args, **kwargs)
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper
+
+
+def _wrap_rag_retrieve(tracer):
+    """Wrapper for RAG/knowledge base retrieval in Dify server."""
+
+    @dont_throw
+    def wrapper(wrapped, instance, args, kwargs):
+        query = kwargs.get('query') or (args[0] if args else '')
+        top_k = kwargs.get('top_k', 5)
+
+        with tracer.start_as_current_span(
+            "dify.rag.retrieve",
+            kind=SpanKind.CLIENT,
+        ) as span:
+            span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
+            span.set_attribute("gen_ai.operation.type", "rag")
+            span.set_attribute("gen_ai.rag.top_k", top_k)
+
+            if query:
+                set_span_attribute(span, "gen_ai.rag.query", query)
+
+            try:
+                result = wrapped(*args, **kwargs)
+
+                # Try to get document count
+                if hasattr(result, '__len__'):
+                    span.set_attribute("gen_ai.rag.document_count", len(result))
+
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper
+
+
+def _wrap_embedding_invoke(tracer, token_histogram: Histogram):
+    """Wrapper for embedding generation in Dify server."""
+
+    @dont_throw
+    def wrapper(wrapped, instance, args, kwargs):
+        texts = kwargs.get('texts') or (args[0] if args else [])
+        text_count = len(texts) if isinstance(texts, (list, tuple)) else 1
+
+        with tracer.start_as_current_span(
+            "dify.embedding.generate",
+            kind=SpanKind.CLIENT,
+        ) as span:
+            span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
+            span.set_attribute("gen_ai.operation.type", "embedding")
+            span.set_attribute("gen_ai.embedding.text_count", text_count)
+
+            model_name = getattr(instance, 'model', 'unknown')
+            span.set_attribute("gen_ai.request.model", model_name)
+
+            try:
+                result = wrapped(*args, **kwargs)
+
+                # Try to get dimensions
+                if hasattr(result, '__len__') and len(result) > 0:
+                    first_embedding = result[0] if isinstance(result, (list, tuple)) else result
+                    if hasattr(first_embedding, '__len__'):
+                        span.set_attribute("gen_ai.embedding.dimensions", len(first_embedding))
+
+                # Record token usage for embeddings
+                if hasattr(result, 'usage') and hasattr(result.usage, 'total_tokens'):
+                    token_histogram.record(
+                        result.usage.total_tokens,
+                        attributes={
+                            "gen_ai.operation.name": "dify.embedding.generate",
+                            "gen_ai.token.type": "input",
+                        },
+                    )
+
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper
+
+
+def _wrap_tool_invoke(tracer):
+    """Wrapper for tool execution in Dify server."""
+
+    @dont_throw
+    def wrapper(wrapped, instance, args, kwargs):
+        tool_name = getattr(instance, 'name', 'unknown')
+
+        with tracer.start_as_current_span(
+            f"dify.tool.{tool_name}",
+            kind=SpanKind.CLIENT,
+        ) as span:
+            span.set_attribute(SpanAttributes.LLM_SYSTEM, "Dify")
+            span.set_attribute("gen_ai.operation.type", "tool")
+            span.set_attribute("gen_ai.tool.name", tool_name)
+
+            # Try to capture tool parameters
+            if kwargs:
+                set_span_attribute(span, "gen_ai.tool.parameters", kwargs)
+
+            try:
+                result = wrapped(*args, **kwargs)
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper

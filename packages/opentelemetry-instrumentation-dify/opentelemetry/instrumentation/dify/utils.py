@@ -10,6 +10,24 @@ logger = logging.getLogger(__name__)
 TRACELOOP_TRACE_CONTENT = "TRACELOOP_TRACE_CONTENT"
 
 
+def is_dify_server_available():
+    """Check if Dify server modules are available."""
+    try:
+        import core  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def is_package_available(package_name):
+    """Check if a package is available for import."""
+    try:
+        __import__(package_name)
+        return True
+    except ImportError:
+        return False
+
+
 def should_send_prompts():
     """Check if prompts should be sent to the tracer."""
     return os.getenv(TRACELOOP_TRACE_CONTENT, "true").lower() == "true"
