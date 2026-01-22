@@ -4,10 +4,13 @@ import pytest
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
-from opentelemetry.semconv_ai import Meters
+from opentelemetry.semconv_ai import Meters, SpanAttributes
 from langgraph.graph import StateGraph
 from openai import OpenAI
 
@@ -291,27 +294,21 @@ def test_workflow_duration_metric(instrument_legacy, reader, chain):
                     break
 
     assert workflow_duration_metric is not None, "Workflow duration metric not found"
-    
+
     # Verify metric properties
     data_points = workflow_duration_metric.data.data_points
     assert len(data_points) > 0, "No data points found for workflow duration metric"
-    
+
     for data_point in data_points:
         assert data_point.sum > 0, "Duration should be greater than 0"
         assert data_point.count > 0, "Count should be greater than 0"
         # Verify the workflow name attribute exists
-        from opentelemetry.semconv_ai import SpanAttributes
         assert SpanAttributes.GEN_AI_WORKFLOW_NAME in data_point.attributes
 
 
 @pytest.mark.vcr
 def test_tool_duration_metric(instrument_legacy, reader):
     """Test that tool duration metric is recorded when tools are used."""
-    from langchain.agents import AgentExecutor, create_tool_calling_agent
-    from langchain_community.tools.tavily_search import TavilySearchResults
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain_openai import ChatOpenAI
-
     OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
         [
             ("system", "You are a helpful assistant"),
@@ -332,7 +329,7 @@ def test_tool_duration_metric(instrument_legacy, reader):
 
     metrics_data = reader.get_metrics_data()
     resource_metrics = metrics_data.resource_metrics
-    
+
     # Find the tool duration metric
     tool_duration_metric = None
     for rm in resource_metrics:
@@ -341,13 +338,13 @@ def test_tool_duration_metric(instrument_legacy, reader):
                 if metric.name == Meters.GEN_AI_TOOL_DURATION:
                     tool_duration_metric = metric
                     break
-    
+
     assert tool_duration_metric is not None, "Tool duration metric not found"
-    
+
     # Verify metric properties
     data_points = tool_duration_metric.data.data_points
     assert len(data_points) > 0, "No data points found for tool duration metric"
-    
+
     for data_point in data_points:
         assert data_point.sum > 0, "Duration should be greater than 0"
         assert data_point.count > 0, "Count should be greater than 0"
@@ -358,11 +355,6 @@ def test_tool_duration_metric(instrument_legacy, reader):
 @pytest.mark.vcr
 def test_agent_duration_metric(instrument_legacy, reader):
     """Test that agent duration metric is recorded when agents are used."""
-    from langchain.agents import AgentExecutor, create_tool_calling_agent
-    from langchain_community.tools.tavily_search import TavilySearchResults
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain_openai import ChatOpenAI
-
     OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
         [
             ("system", "You are a helpful assistant"),
@@ -383,7 +375,7 @@ def test_agent_duration_metric(instrument_legacy, reader):
 
     metrics_data = reader.get_metrics_data()
     resource_metrics = metrics_data.resource_metrics
-    
+
     # Find the agent duration metric
     agent_duration_metric = None
     for rm in resource_metrics:
@@ -392,14 +384,14 @@ def test_agent_duration_metric(instrument_legacy, reader):
                 if metric.name == Meters.GEN_AI_AGENT_DURATION:
                     agent_duration_metric = metric
                     break
-    
+
     # Agent metrics may or may not be present depending on agent implementation
     # so we check if it exists and if so verify its properties
     if agent_duration_metric is not None:
         # Verify metric properties
         data_points = agent_duration_metric.data.data_points
         assert len(data_points) > 0, "No data points found for agent duration metric"
-        
+
         for data_point in data_points:
             assert data_point.sum > 0, "Duration should be greater than 0"
             assert data_point.count > 0, "Count should be greater than 0"

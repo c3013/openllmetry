@@ -181,6 +181,20 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
 
         return "unknown"
 
+    def _is_agent_workflow(self, workflow_name: str) -> bool:
+        """
+        Check if a workflow is an agent workflow.
+
+        Args:
+            workflow_name: The name of the workflow
+
+        Returns:
+            True if this is an agent workflow, False otherwise
+        """
+        # Check for common agent workflow patterns
+        agent_indicators = ["AgentExecutor", "Agent", "agent"]
+        return any(indicator in workflow_name for indicator in agent_indicators)
+
     def _get_span(self, run_id: UUID) -> Span:
         return self.spans[run_id].span
 
@@ -474,9 +488,9 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                     SpanAttributes.GEN_AI_WORKFLOW_NAME: workflow_name,
                 },
             )
-            
+
             # Also record agent duration if this is an agent workflow
-            if "Agent" in workflow_name:
+            if self._is_agent_workflow(workflow_name):
                 self.agent_duration_histogram.record(
                     duration,
                     attributes={
@@ -835,9 +849,9 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                     ERROR_TYPE: type(error).__name__,
                 },
             )
-            
+
             # Also record agent duration with error if this is an agent workflow
-            if "Agent" in workflow_name:
+            if self._is_agent_workflow(workflow_name):
                 self.agent_duration_histogram.record(
                     duration,
                     attributes={
