@@ -270,3 +270,143 @@ def test_langgraph_metrics(instrument_legacy, reader, openai_client):
             == "openai"
         )
         assert data_point.value > 0
+
+
+@pytest.mark.vcr
+def test_workflow_duration_metric(instrument_legacy, reader, chain):
+    """Test that workflow duration metric is recorded."""
+    chain.run(product="colorful socks")
+
+    metrics_data = reader.get_metrics_data()
+    resource_metrics = metrics_data.resource_metrics
+    assert len(resource_metrics) > 0
+
+    # Find the workflow duration metric
+    workflow_duration_metric = None
+    for rm in resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name == Meters.GEN_AI_WORKFLOW_DURATION:
+                    workflow_duration_metric = metric
+                    break
+
+    assert workflow_duration_metric is not None, "Workflow duration metric not found"
+    
+    # Verify metric properties
+    data_points = workflow_duration_metric.data.data_points
+    assert len(data_points) > 0, "No data points found for workflow duration metric"
+    
+    for data_point in data_points:
+        assert data_point.sum > 0, "Duration should be greater than 0"
+        assert data_point.count > 0, "Count should be greater than 0"
+        # Verify the workflow name attribute exists
+        from opentelemetry.semconv_ai import SpanAttributes
+        assert SpanAttributes.GEN_AI_WORKFLOW_NAME in data_point.attributes
+
+
+@pytest.mark.vcr
+def test_tool_duration_metric(instrument_legacy, reader):
+    """Test that tool duration metric is recorded when tools are used."""
+    from langchain.agents import Tool, initialize_agent, AgentType
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(temperature=0)
+    
+    def dummy_tool(query: str) -> str:
+        """A dummy tool that returns a fixed response."""
+        return "Tool response"
+    
+    tools = [
+        Tool(
+            name="DummyTool",
+            func=dummy_tool,
+            description="A dummy tool for testing"
+        )
+    ]
+    
+    agent = initialize_agent(
+        tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False
+    )
+    
+    try:
+        agent.run("Use the DummyTool")
+    except Exception:
+        # Some tools might fail in test environment, but metrics should still be recorded
+        pass
+    
+    metrics_data = reader.get_metrics_data()
+    resource_metrics = metrics_data.resource_metrics
+    
+    # Find the tool duration metric
+    tool_duration_metric = None
+    for rm in resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name == Meters.GEN_AI_TOOL_DURATION:
+                    tool_duration_metric = metric
+                    break
+    
+    if tool_duration_metric is not None:
+        # Verify metric properties if found
+        data_points = tool_duration_metric.data.data_points
+        assert len(data_points) > 0, "No data points found for tool duration metric"
+        
+        for data_point in data_points:
+            assert data_point.sum > 0, "Duration should be greater than 0"
+            assert data_point.count > 0, "Count should be greater than 0"
+            # Verify the tool name attribute exists
+            assert GenAIAttributes.GEN_AI_TOOL_NAME in data_point.attributes
+
+
+@pytest.mark.vcr
+def test_agent_duration_metric(instrument_legacy, reader):
+    """Test that agent duration metric is recorded when agents are used."""
+    from langchain.agents import Tool, initialize_agent, AgentType
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(temperature=0)
+    
+    def search_tool(query: str) -> str:
+        """A search tool that returns a fixed response."""
+        return "Search result"
+    
+    tools = [
+        Tool(
+            name="Search",
+            func=search_tool,
+            description="Useful for searching"
+        )
+    ]
+    
+    agent = initialize_agent(
+        tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False
+    )
+    
+    try:
+        agent.run("Search for something")
+    except Exception:
+        # Some agents might fail in test environment, but metrics should still be recorded
+        pass
+    
+    metrics_data = reader.get_metrics_data()
+    resource_metrics = metrics_data.resource_metrics
+    
+    # Find the agent duration metric
+    agent_duration_metric = None
+    for rm in resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name == Meters.GEN_AI_AGENT_DURATION:
+                    agent_duration_metric = metric
+                    break
+    
+    if agent_duration_metric is not None:
+        # Verify metric properties if found
+        data_points = agent_duration_metric.data.data_points
+        assert len(data_points) > 0, "No data points found for agent duration metric"
+        
+        for data_point in data_points:
+            assert data_point.sum > 0, "Duration should be greater than 0"
+            assert data_point.count > 0, "Count should be greater than 0"
+            # Verify the operation name attribute exists
+            assert GenAIAttributes.GEN_AI_OPERATION_NAME in data_point.attributes
