@@ -307,33 +307,29 @@ def test_workflow_duration_metric(instrument_legacy, reader, chain):
 @pytest.mark.vcr
 def test_tool_duration_metric(instrument_legacy, reader):
     """Test that tool duration metric is recorded when tools are used."""
-    from langchain.agents import Tool, initialize_agent, AgentType
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+    from langchain_community.tools.tavily_search import TavilySearchResults
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
     from langchain_openai import ChatOpenAI
 
-    llm = ChatOpenAI(temperature=0)
-    
-    def dummy_tool(query: str) -> str:
-        """A dummy tool that returns a fixed response."""
-        return "Tool response"
-    
-    tools = [
-        Tool(
-            name="DummyTool",
-            func=dummy_tool,
-            description="A dummy tool for testing"
-        )
-    ]
-    
-    agent = initialize_agent(
-        tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False
+    OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a helpful assistant"),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ]
     )
-    
-    try:
-        agent.run("Use the DummyTool")
-    except Exception:
-        # Some tools might fail in test environment, but metrics should still be recorded
-        pass
-    
+
+    search = TavilySearchResults(max_results=2)
+    tools = [search]
+
+    model = ChatOpenAI(model="gpt-3.5-turbo")
+    agent = create_tool_calling_agent(model, tools, OPENAI_FUNCTIONS_AGENT_PROMPT)
+    agent_executor = AgentExecutor(agent=agent, tools=tools)
+
+    agent_executor.invoke({"input": "What is OpenLLMetry?"})
+
     metrics_data = reader.get_metrics_data()
     resource_metrics = metrics_data.resource_metrics
     
@@ -346,48 +342,45 @@ def test_tool_duration_metric(instrument_legacy, reader):
                     tool_duration_metric = metric
                     break
     
-    if tool_duration_metric is not None:
-        # Verify metric properties if found
-        data_points = tool_duration_metric.data.data_points
-        assert len(data_points) > 0, "No data points found for tool duration metric"
-        
-        for data_point in data_points:
-            assert data_point.sum > 0, "Duration should be greater than 0"
-            assert data_point.count > 0, "Count should be greater than 0"
-            # Verify the tool name attribute exists
-            assert GenAIAttributes.GEN_AI_TOOL_NAME in data_point.attributes
+    assert tool_duration_metric is not None, "Tool duration metric not found"
+    
+    # Verify metric properties
+    data_points = tool_duration_metric.data.data_points
+    assert len(data_points) > 0, "No data points found for tool duration metric"
+    
+    for data_point in data_points:
+        assert data_point.sum > 0, "Duration should be greater than 0"
+        assert data_point.count > 0, "Count should be greater than 0"
+        # Verify the tool name attribute exists
+        assert GenAIAttributes.GEN_AI_TOOL_NAME in data_point.attributes
 
 
 @pytest.mark.vcr
 def test_agent_duration_metric(instrument_legacy, reader):
     """Test that agent duration metric is recorded when agents are used."""
-    from langchain.agents import Tool, initialize_agent, AgentType
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+    from langchain_community.tools.tavily_search import TavilySearchResults
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
     from langchain_openai import ChatOpenAI
 
-    llm = ChatOpenAI(temperature=0)
-    
-    def search_tool(query: str) -> str:
-        """A search tool that returns a fixed response."""
-        return "Search result"
-    
-    tools = [
-        Tool(
-            name="Search",
-            func=search_tool,
-            description="Useful for searching"
-        )
-    ]
-    
-    agent = initialize_agent(
-        tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False
+    OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a helpful assistant"),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ]
     )
-    
-    try:
-        agent.run("Search for something")
-    except Exception:
-        # Some agents might fail in test environment, but metrics should still be recorded
-        pass
-    
+
+    search = TavilySearchResults(max_results=2)
+    tools = [search]
+
+    model = ChatOpenAI(model="gpt-3.5-turbo")
+    agent = create_tool_calling_agent(model, tools, OPENAI_FUNCTIONS_AGENT_PROMPT)
+    agent_executor = AgentExecutor(agent=agent, tools=tools)
+
+    agent_executor.invoke({"input": "What is OpenLLMetry?"})
+
     metrics_data = reader.get_metrics_data()
     resource_metrics = metrics_data.resource_metrics
     
@@ -400,8 +393,10 @@ def test_agent_duration_metric(instrument_legacy, reader):
                     agent_duration_metric = metric
                     break
     
+    # Agent metrics may or may not be present depending on agent implementation
+    # so we check if it exists and if so verify its properties
     if agent_duration_metric is not None:
-        # Verify metric properties if found
+        # Verify metric properties
         data_points = agent_duration_metric.data.data_points
         assert len(data_points) > 0, "No data points found for agent duration metric"
         
