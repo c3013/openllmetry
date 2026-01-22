@@ -60,8 +60,16 @@ class Meters:
     LLM_WATSONX_COMPLETIONS_RESPONSES = "llm.watsonx.completions.responses"
     LLM_WATSONX_COMPLETIONS_TOKENS = "llm.watsonx.completions.tokens"
 
+    # GenAI Agent, Workflow, and Tool Duration Metrics
+    GEN_AI_AGENT_DURATION = "gen_ai.agent.duration"
+    GEN_AI_WORKFLOW_DURATION = "gen_ai.workflow.duration"
+    GEN_AI_TOOL_DURATION = "gen_ai.tool.duration"
+
 
 class SpanAttributes:
+    # GenAI Workflow Name (missing from incubating semantic conventions)
+    GEN_AI_WORKFLOW_NAME = "gen_ai.workflow.name"
+
     # GenAI Usage Cache Attributes (missing from incubating semantic conventions)
     GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS = "gen_ai.usage.cache_creation_input_tokens"
     GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = "gen_ai.usage.cache_read_input_tokens"
