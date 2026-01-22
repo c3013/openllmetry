@@ -474,6 +474,15 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                     SpanAttributes.GEN_AI_WORKFLOW_NAME: workflow_name,
                 },
             )
+            
+            # Also record agent duration if this is an agent workflow
+            if "Agent" in workflow_name:
+                self.agent_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_OPERATION_NAME: workflow_name,
+                    },
+                )
 
         self._end_span(span, run_id)
         if parent_run_id is None:
@@ -826,6 +835,16 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                     ERROR_TYPE: type(error).__name__,
                 },
             )
+            
+            # Also record agent duration with error if this is an agent workflow
+            if "Agent" in workflow_name:
+                self.agent_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_OPERATION_NAME: workflow_name,
+                        ERROR_TYPE: type(error).__name__,
+                    },
+                )
 
         span.set_status(Status(StatusCode.ERROR), str(error))
         span.record_exception(error)
@@ -864,86 +883,6 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         self._end_span(span, run_id)
 
     @dont_throw
-    def on_agent_action(
-        self,
-        action: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Run when agent takes an action."""
-        if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
-            return
-
-        # Get the action name/tool from the agent action
-        action_name = getattr(action, 'tool', None) or getattr(action, 'action', None) or "unknown"
-        workflow_name = self.get_workflow_name(parent_run_id)
-        entity_path = self.get_entity_path(parent_run_id)
-
-        span = self._create_task_span(
-            run_id,
-            parent_run_id,
-            action_name,
-            TraceloopSpanKindValues.AGENT,
-            workflow_name,
-            action_name,
-            entity_path,
-        )
-
-        # Set operation name attribute
-        _set_span_attribute(span, GenAIAttributes.GEN_AI_OPERATION_NAME, action_name)
-
-        if not should_emit_events() and should_send_prompts():
-            span.set_attribute(
-                SpanAttributes.TRACELOOP_ENTITY_INPUT,
-                json.dumps(
-                    {
-                        "action": str(action),
-                        "kwargs": kwargs,
-                    },
-                    cls=CallbackFilteredJSONEncoder,
-                ),
-            )
-
-    @dont_throw
-    def on_agent_finish(
-        self,
-        finish: Any,
-        *,
-        run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Run when agent finishes running."""
-        if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
-            return
-
-        span_holder = self.spans[run_id]
-        span = span_holder.span
-
-        if not should_emit_events() and should_send_prompts():
-            span.set_attribute(
-                SpanAttributes.TRACELOOP_ENTITY_OUTPUT,
-                json.dumps(
-                    {"finish": str(finish), "kwargs": kwargs},
-                    cls=CallbackFilteredJSONEncoder,
-                ),
-            )
-
-        # Record agent duration metric
-        duration = time.time() - span_holder.start_time
-        operation_name = span.attributes.get(GenAIAttributes.GEN_AI_OPERATION_NAME, "unknown")
-        self.agent_duration_histogram.record(
-            duration,
-            attributes={
-                GenAIAttributes.GEN_AI_OPERATION_NAME: operation_name,
-            },
-        )
-
-        self._end_span(span, run_id)
-
-    @dont_throw
     def on_agent_error(
         self,
         error: BaseException,
@@ -953,26 +892,7 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Run when agent errors."""
-        if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
-            return
-
-        span_holder = self.spans[run_id]
-        span = span_holder.span
-
-        # Record agent duration metric with error
-        duration = time.time() - span_holder.start_time
-        operation_name = span.attributes.get(GenAIAttributes.GEN_AI_OPERATION_NAME, "unknown")
-        self.agent_duration_histogram.record(
-            duration,
-            attributes={
-                GenAIAttributes.GEN_AI_OPERATION_NAME: operation_name,
-                ERROR_TYPE: type(error).__name__,
-            },
-        )
-
-        span.set_status(Status(StatusCode.ERROR), str(error))
-        span.record_exception(error)
-        self._end_span(span, run_id)
+        self._handle_error(error, run_id, parent_run_id, **kwargs)
 
     @dont_throw
     def on_retriever_error(
