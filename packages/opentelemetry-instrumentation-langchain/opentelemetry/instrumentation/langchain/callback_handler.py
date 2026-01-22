@@ -451,6 +451,27 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                 ),
             )
 
+        # Add GenAI semantic convention attributes for workflows
+        if kind == TraceloopSpanKindValues.WORKFLOW:
+            # Set workflow name
+            _set_span_attribute(span, SpanAttributes.GEN_AI_WORKFLOW_NAME, workflow_name)
+
+            # Extract and set input messages if available
+            if "messages" in inputs:
+                messages = inputs["messages"]
+                if messages and isinstance(messages, list):
+                    input_messages_json = json.dumps(
+                        [{"role": getattr(msg, "type", "unknown"), "content": str(msg.content)}
+                         for msg in messages if hasattr(msg, "content")],
+                        cls=CallbackFilteredJSONEncoder
+                    )
+                    _set_span_attribute(span, GenAIAttributes.GEN_AI_INPUT_MESSAGES, input_messages_json)
+
+            # If this is an agent workflow, add agent-specific attributes
+            if self._is_agent_workflow(workflow_name):
+                _set_span_attribute(span, GenAIAttributes.GEN_AI_OPERATION_NAME, workflow_name)
+                _set_span_attribute(span, GenAIAttributes.GEN_AI_AGENT_ID, str(run_id))
+
         # The start_time is now automatically set when creating the SpanHolder
 
     @dont_throw
@@ -480,6 +501,26 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         # Record workflow duration metric if this is a workflow span
         span_kind = span.attributes.get(SpanAttributes.TRACELOOP_SPAN_KIND)
         if span_kind == TraceloopSpanKindValues.WORKFLOW.value:
+            # Add GenAI semantic convention output messages
+            if "messages" in outputs or "output" in outputs:
+                output_content = outputs.get("output") or outputs.get("messages")
+                if output_content:
+                    if isinstance(output_content, list):
+                        # Handle list of messages
+                        output_messages_json = json.dumps(
+                            [{"role": getattr(msg, "type", "assistant"), "content": str(msg.content)}
+                             for msg in output_content if hasattr(msg, "content")],
+                            cls=CallbackFilteredJSONEncoder
+                        )
+                        _set_span_attribute(span, GenAIAttributes.GEN_AI_OUTPUT_MESSAGES, output_messages_json)
+                    elif isinstance(output_content, str):
+                        # Handle string output
+                        output_messages_json = json.dumps(
+                            [{"role": "assistant", "content": output_content}],
+                            cls=CallbackFilteredJSONEncoder
+                        )
+                        _set_span_attribute(span, GenAIAttributes.GEN_AI_OUTPUT_MESSAGES, output_messages_json)
+
             duration = time.time() - span_holder.start_time
             workflow_name = span_holder.workflow_name or "unknown"
             self.workflow_duration_histogram.record(
@@ -729,6 +770,25 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                 ),
             )
 
+        # Add GenAI semantic convention attributes for tools
+        _set_span_attribute(span, GenAIAttributes.GEN_AI_OPERATION_NAME, name)
+        _set_span_attribute(span, GenAIAttributes.GEN_AI_TOOL_NAME, name)
+
+        # Set tool type (default to "function" as per OpenTelemetry conventions)
+        _set_span_attribute(span, GenAIAttributes.GEN_AI_TOOL_TYPE, "function")
+
+        # Extract tool call ID from kwargs or metadata
+        tool_call_id = kwargs.get("tool_call_id") or (metadata or {}).get("tool_call_id") or str(run_id)
+        _set_span_attribute(span, GenAIAttributes.GEN_AI_TOOL_CALL_ID, tool_call_id)
+
+        # Set tool call arguments from inputs
+        if inputs:
+            tool_arguments_json = json.dumps(inputs, cls=CallbackFilteredJSONEncoder)
+            _set_span_attribute(span, "gen_ai.tool.call.arguments", tool_arguments_json)
+        elif input_str:
+            tool_arguments_json = json.dumps({"input": input_str}, cls=CallbackFilteredJSONEncoder)
+            _set_span_attribute(span, "gen_ai.tool.call.arguments", tool_arguments_json)
+
     @dont_throw
     def on_tool_end(
         self,
@@ -752,6 +812,14 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
                     cls=CallbackFilteredJSONEncoder,
                 ),
             )
+
+        # Add GenAI semantic convention tool result
+        if output is not None:
+            if isinstance(output, str):
+                _set_span_attribute(span, "gen_ai.tool.call.result", output)
+            else:
+                tool_result_json = json.dumps({"output": output}, cls=CallbackFilteredJSONEncoder)
+                _set_span_attribute(span, "gen_ai.tool.call.result", tool_result_json)
 
         # Record tool duration metric
         duration = time.time() - span_holder.start_time

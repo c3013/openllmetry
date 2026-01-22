@@ -397,3 +397,99 @@ def test_agent_duration_metric(instrument_legacy, reader):
             assert data_point.count > 0, "Count should be greater than 0"
             # Verify the operation name attribute exists
             assert GenAIAttributes.GEN_AI_OPERATION_NAME in data_point.attributes
+
+
+@pytest.mark.vcr
+def test_workflow_span_attributes(instrument_legacy, span_exporter, chain):
+    """Test that workflow spans have the required GenAI attributes."""
+    chain.run(product="colorful socks")
+
+    spans = span_exporter.get_finished_spans()
+
+    # Find workflow span
+    workflow_span = None
+    for span in spans:
+        if "workflow" in span.name.lower():
+            workflow_span = span
+            break
+
+    assert workflow_span is not None, "Workflow span not found"
+
+    # Check that workflow name attribute is set
+    assert SpanAttributes.GEN_AI_WORKFLOW_NAME in workflow_span.attributes
+
+
+@pytest.mark.vcr
+def test_tool_span_attributes(instrument_legacy, span_exporter):
+    """Test that tool spans have the required GenAI attributes."""
+    OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a helpful assistant"),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ]
+    )
+
+    search = TavilySearchResults(max_results=2)
+    tools = [search]
+
+    model = ChatOpenAI(model="gpt-3.5-turbo")
+    agent = create_tool_calling_agent(model, tools, OPENAI_FUNCTIONS_AGENT_PROMPT)
+    agent_executor = AgentExecutor(agent=agent, tools=tools)
+
+    agent_executor.invoke({"input": "What is OpenLLMetry?"})
+
+    spans = span_exporter.get_finished_spans()
+
+    # Find tool span
+    tool_span = None
+    for span in spans:
+        if ".tool" in span.name:
+            tool_span = span
+            break
+
+    assert tool_span is not None, "Tool span not found"
+
+    # Check that required GenAI attributes are set
+    assert GenAIAttributes.GEN_AI_OPERATION_NAME in tool_span.attributes
+    assert GenAIAttributes.GEN_AI_TOOL_NAME in tool_span.attributes
+    assert GenAIAttributes.GEN_AI_TOOL_TYPE in tool_span.attributes
+    assert GenAIAttributes.GEN_AI_TOOL_CALL_ID in tool_span.attributes
+
+
+@pytest.mark.vcr
+def test_agent_span_attributes(instrument_legacy, span_exporter):
+    """Test that agent workflow spans have the required GenAI attributes."""
+    OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a helpful assistant"),
+            MessagesPlaceholder("chat_history", optional=True),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ]
+    )
+
+    search = TavilySearchResults(max_results=2)
+    tools = [search]
+
+    model = ChatOpenAI(model="gpt-3.5-turbo")
+    agent = create_tool_calling_agent(model, tools, OPENAI_FUNCTIONS_AGENT_PROMPT)
+    agent_executor = AgentExecutor(agent=agent, tools=tools)
+
+    agent_executor.invoke({"input": "What is OpenLLMetry?"})
+
+    spans = span_exporter.get_finished_spans()
+
+    # Find AgentExecutor workflow span
+    agent_workflow_span = None
+    for span in spans:
+        if "AgentExecutor" in span.name and "workflow" in span.name.lower():
+            agent_workflow_span = span
+            break
+
+    assert agent_workflow_span is not None, "Agent workflow span not found"
+
+    # Check that agent-specific GenAI attributes are set
+    assert GenAIAttributes.GEN_AI_OPERATION_NAME in agent_workflow_span.attributes
+    assert GenAIAttributes.GEN_AI_AGENT_ID in agent_workflow_span.attributes
