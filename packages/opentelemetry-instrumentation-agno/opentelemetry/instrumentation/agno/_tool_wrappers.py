@@ -140,18 +140,27 @@ class _FunctionCallAExecuteWrapper:
                 span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND,
                                    TraceloopSpanKindValues.TOOL.value)
                 span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_NAME, function_name)
+                
+                # Add GenAI semantic convention attributes for tools
+                span.set_attribute(GenAIAttributes.GEN_AI_OPERATION_NAME, function_name)
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_NAME, function_name)
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_TYPE, "function")
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_CALL_ID, str(id(instance)))
 
                 if hasattr(instance.function, 'description') and instance.function.description:
                     span.set_attribute("tool.description", instance.function.description)
+                    span.set_attribute(GenAIAttributes.GEN_AI_TOOL_DESCRIPTION, instance.function.description)
 
                 # Capture input arguments
                 if should_send_prompts():
                     if hasattr(instance, 'arguments') and instance.arguments:
-                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT,
-                                           json.dumps(instance.arguments))
+                        arguments_json = json.dumps(instance.arguments)
+                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT, arguments_json)
+                        span.set_attribute("gen_ai.tool.call.arguments", arguments_json)
                     elif kwargs:
-                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT,
-                                           json.dumps(kwargs))
+                        kwargs_json = json.dumps(kwargs)
+                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT, kwargs_json)
+                        span.set_attribute("gen_ai.tool.call.arguments", kwargs_json)
 
                 start_time = time.time()
 
@@ -161,6 +170,7 @@ class _FunctionCallAExecuteWrapper:
 
                 if result is not None and should_send_prompts():
                     span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_OUTPUT, str(result))
+                    span.set_attribute("gen_ai.tool.call.result", str(result))
 
                 span.set_status(Status(StatusCode.OK))
 
@@ -172,9 +182,28 @@ class _FunctionCallAExecuteWrapper:
                     }
                 )
 
+                # Record tool duration metric
+                self._tool_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_TOOL_NAME: function_name,
+                    },
+                )
+
                 return result
 
             except Exception as e:
+                duration = time.time() - start_time
+                
+                # Record tool duration metric with error
+                self._tool_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_TOOL_NAME: function_name,
+                        "error.type": type(e).__name__,
+                    },
+                )
+                
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
                 raise
