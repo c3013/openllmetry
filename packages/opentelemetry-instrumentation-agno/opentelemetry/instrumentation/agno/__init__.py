@@ -69,17 +69,40 @@ class AgnoInstrumentor(BaseInstrumentor):
             description="Measures number of input and output tokens used",
         )
 
+        # Create agent duration histogram
+        agent_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_AGENT_DURATION,
+            unit="s",
+            description="GenAI agent duration",
+        )
+
+        # Create workflow duration histogram
+        workflow_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_WORKFLOW_DURATION,
+            unit="s",
+            description="GenAI workflow duration",
+        )
+
+        # Create tool duration histogram
+        tool_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_TOOL_DURATION,
+            unit="s",
+            description="GenAI tool duration",
+        )
+
         # Wrap Agent methods
         wrap_function_wrapper(
             module="agno.agent",
             name="Agent.run",
-            wrapper=_AgentRunWrapper(tracer, duration_histogram, token_histogram),
+            wrapper=_AgentRunWrapper(tracer, duration_histogram, token_histogram,
+                                      agent_duration_histogram),
         )
 
         wrap_function_wrapper(
             module="agno.agent",
             name="Agent.arun",
-            wrapper=_AgentARunWrapper(tracer, duration_histogram, token_histogram),
+            wrapper=_AgentARunWrapper(tracer, duration_histogram, token_histogram,
+                                       agent_duration_histogram),
         )
 
         # Wrap Team methods if available
@@ -87,13 +110,15 @@ class AgnoInstrumentor(BaseInstrumentor):
             wrap_function_wrapper(
                 module="agno.team",
                 name="Team.run",
-                wrapper=_TeamRunWrapper(tracer, duration_histogram, token_histogram),
+                wrapper=_TeamRunWrapper(tracer, duration_histogram, token_histogram,
+                                        workflow_duration_histogram),
             )
 
             wrap_function_wrapper(
                 module="agno.team",
                 name="Team.arun",
-                wrapper=_TeamARunWrapper(tracer, duration_histogram, token_histogram),
+                wrapper=_TeamARunWrapper(tracer, duration_histogram, token_histogram,
+                                          workflow_duration_histogram),
             )
         except Exception as e:
             logger.debug(f"Could not instrument Team: {e}")
@@ -104,7 +129,8 @@ class AgnoInstrumentor(BaseInstrumentor):
                 module="agno.tools",
                 name="FunctionCall.execute",
                 wrapper=_FunctionCallExecuteWrapper(
-                    tracer, duration_histogram, token_histogram
+                    tracer, duration_histogram, token_histogram,
+                    tool_duration_histogram
                 ),
             )
 
@@ -112,7 +138,8 @@ class AgnoInstrumentor(BaseInstrumentor):
                 module="agno.tools",
                 name="FunctionCall.aexecute",
                 wrapper=_FunctionCallAExecuteWrapper(
-                    tracer, duration_histogram, token_histogram
+                    tracer, duration_histogram, token_histogram,
+                    tool_duration_histogram
                 ),
             )
         except Exception as e:
@@ -136,11 +163,12 @@ class AgnoInstrumentor(BaseInstrumentor):
 class _AgentRunWrapper:
     """Wrapper for Agent.run() method to capture synchronous agent execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, agent_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._agent_duration_histogram = agent_duration_histogram
 
     @dont_throw
     def __call__(self, wrapped, instance, args, kwargs):
@@ -218,6 +246,9 @@ class _AgentRunWrapper:
 
                     if hasattr(instance, "name"):
                         span.set_attribute(GenAIAttributes.GEN_AI_AGENT_NAME, instance.name)
+                        # Add GenAI semantic convention attributes for agents
+                        span.set_attribute(GenAIAttributes.GEN_AI_OPERATION_NAME, instance.name)
+                        span.set_attribute(GenAIAttributes.GEN_AI_AGENT_ID, str(id(instance)))
 
                     if hasattr(instance, "model") and instance.model:
                         model_name = getattr(
@@ -230,6 +261,10 @@ class _AgentRunWrapper:
                         span.set_attribute(
                             SpanAttributes.TRACELOOP_ENTITY_INPUT, input_message
                         )
+                        # Add GenAI input messages
+                        import json
+                        input_messages_json = json.dumps([{"role": "user", "content": input_message}])
+                        span.set_attribute(GenAIAttributes.GEN_AI_INPUT_MESSAGES, input_messages_json)
 
                     import time
 
@@ -243,6 +278,10 @@ class _AgentRunWrapper:
                         span.set_attribute(
                             SpanAttributes.TRACELOOP_ENTITY_OUTPUT, str(result.content)
                         )
+                        # Add GenAI output messages
+                        import json
+                        output_messages_json = json.dumps([{"role": "assistant", "content": str(result.content)}])
+                        span.set_attribute(GenAIAttributes.GEN_AI_OUTPUT_MESSAGES, output_messages_json)
 
                     if hasattr(result, "run_id"):
                         span.set_attribute("agno.run.id", result.run_id)
@@ -274,9 +313,30 @@ class _AgentRunWrapper:
                         },
                     )
 
+                    # Record agent duration metric
+                    agent_name = getattr(instance, 'name', 'unknown')
+                    self._agent_duration_histogram.record(
+                        duration,
+                        attributes={
+                            GenAIAttributes.GEN_AI_OPERATION_NAME: agent_name,
+                        },
+                    )
+
                     return result
 
                 except Exception as e:
+                    duration = time.time() - start_time
+                    
+                    # Record agent duration metric with error
+                    agent_name = getattr(instance, 'name', 'unknown')
+                    self._agent_duration_histogram.record(
+                        duration,
+                        attributes={
+                            GenAIAttributes.GEN_AI_OPERATION_NAME: agent_name,
+                            "error.type": type(e).__name__,
+                        },
+                    )
+                    
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                     span.record_exception(e)
                     raise
@@ -285,11 +345,12 @@ class _AgentRunWrapper:
 class _AgentARunWrapper:
     """Wrapper for Agent.arun() method to capture asynchronous agent execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, agent_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._agent_duration_histogram = agent_duration_histogram
 
     @dont_throw
     def __call__(self, wrapped, instance, args, kwargs):
@@ -437,11 +498,12 @@ class _AgentARunWrapper:
 class _TeamRunWrapper:
     """Wrapper for Team.run() method to capture synchronous team execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, workflow_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._workflow_duration_histogram = workflow_duration_histogram
 
     @dont_throw
     def __call__(self, wrapped, instance, args, kwargs):
@@ -466,12 +528,18 @@ class _TeamRunWrapper:
 
                 if hasattr(instance, "name"):
                     span.set_attribute("agno.team.name", instance.name)
+                    # Add GenAI semantic convention attributes for workflows
+                    span.set_attribute(SpanAttributes.GEN_AI_WORKFLOW_NAME, instance.name)
 
                 if args and should_send_prompts():
                     input_message = str(args[0])
                     span.set_attribute(
                         SpanAttributes.TRACELOOP_ENTITY_INPUT, input_message
                     )
+                    # Add GenAI input messages
+                    import json
+                    input_messages_json = json.dumps([{"role": "user", "content": input_message}])
+                    span.set_attribute(GenAIAttributes.GEN_AI_INPUT_MESSAGES, input_messages_json)
 
                 import time
 
@@ -485,6 +553,9 @@ class _TeamRunWrapper:
                     span.set_attribute(
                         SpanAttributes.TRACELOOP_ENTITY_OUTPUT, str(result.content)
                     )
+                    # Add GenAI output messages
+                    output_messages_json = json.dumps([{"role": "assistant", "content": str(result.content)}])
+                    span.set_attribute(GenAIAttributes.GEN_AI_OUTPUT_MESSAGES, output_messages_json)
 
                 if hasattr(result, "run_id"):
                     span.set_attribute("agno.run.id", result.run_id)
@@ -499,9 +570,30 @@ class _TeamRunWrapper:
                     },
                 )
 
+                # Record workflow duration metric
+                workflow_name = getattr(instance, 'name', 'unknown')
+                self._workflow_duration_histogram.record(
+                    duration,
+                    attributes={
+                        SpanAttributes.GEN_AI_WORKFLOW_NAME: workflow_name,
+                    },
+                )
+
                 return result
 
             except Exception as e:
+                duration = time.time() - start_time
+                
+                # Record workflow duration metric with error
+                workflow_name = getattr(instance, 'name', 'unknown')
+                self._workflow_duration_histogram.record(
+                    duration,
+                    attributes={
+                        SpanAttributes.GEN_AI_WORKFLOW_NAME: workflow_name,
+                        "error.type": type(e).__name__,
+                    },
+                )
+                
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
                 raise
@@ -510,11 +602,12 @@ class _TeamRunWrapper:
 class _TeamARunWrapper:
     """Wrapper for Team.arun() method to capture asynchronous team execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, workflow_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._workflow_duration_histogram = workflow_duration_histogram
 
     @dont_throw
     async def __call__(self, wrapped, instance, args, kwargs):

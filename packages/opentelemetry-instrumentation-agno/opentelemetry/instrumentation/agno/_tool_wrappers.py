@@ -14,11 +14,12 @@ from opentelemetry.trace.status import Status, StatusCode
 class _FunctionCallExecuteWrapper:
     """Wrapper for FunctionCall.execute() method to capture synchronous tool execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, tool_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._tool_duration_histogram = tool_duration_histogram
 
     @dont_throw
     def __call__(self, wrapped, instance, args, kwargs):
@@ -40,18 +41,27 @@ class _FunctionCallExecuteWrapper:
                 span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND,
                                    TraceloopSpanKindValues.TOOL.value)
                 span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_NAME, function_name)
+                
+                # Add GenAI semantic convention attributes for tools
+                span.set_attribute(GenAIAttributes.GEN_AI_OPERATION_NAME, function_name)
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_NAME, function_name)
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_TYPE, "function")
+                span.set_attribute(GenAIAttributes.GEN_AI_TOOL_CALL_ID, str(id(instance)))
 
                 if hasattr(instance.function, 'description') and instance.function.description:
                     span.set_attribute("tool.description", instance.function.description)
+                    span.set_attribute(GenAIAttributes.GEN_AI_TOOL_DESCRIPTION, instance.function.description)
 
                 # Capture input arguments
                 if should_send_prompts():
                     if hasattr(instance, 'arguments') and instance.arguments:
-                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT,
-                                           json.dumps(instance.arguments))
+                        arguments_json = json.dumps(instance.arguments)
+                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT, arguments_json)
+                        span.set_attribute("gen_ai.tool.call.arguments", arguments_json)
                     elif kwargs:
-                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT,
-                                           json.dumps(kwargs))
+                        kwargs_json = json.dumps(kwargs)
+                        span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_INPUT, kwargs_json)
+                        span.set_attribute("gen_ai.tool.call.arguments", kwargs_json)
 
                 start_time = time.time()
 
@@ -61,6 +71,7 @@ class _FunctionCallExecuteWrapper:
 
                 if result is not None and should_send_prompts():
                     span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_OUTPUT, str(result))
+                    span.set_attribute("gen_ai.tool.call.result", str(result))
 
                 span.set_status(Status(StatusCode.OK))
 
@@ -72,9 +83,28 @@ class _FunctionCallExecuteWrapper:
                     }
                 )
 
+                # Record tool duration metric
+                self._tool_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_TOOL_NAME: function_name,
+                    },
+                )
+
                 return result
 
             except Exception as e:
+                duration = time.time() - start_time
+                
+                # Record tool duration metric with error
+                self._tool_duration_histogram.record(
+                    duration,
+                    attributes={
+                        GenAIAttributes.GEN_AI_TOOL_NAME: function_name,
+                        "error.type": type(e).__name__,
+                    },
+                )
+                
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
                 raise
@@ -83,11 +113,12 @@ class _FunctionCallExecuteWrapper:
 class _FunctionCallAExecuteWrapper:
     """Wrapper for FunctionCall.aexecute() method to capture asynchronous tool execution."""
 
-    def __init__(self, tracer, duration_histogram, token_histogram):
+    def __init__(self, tracer, duration_histogram, token_histogram, tool_duration_histogram):
         """Initialize the wrapper with OpenTelemetry instrumentation objects."""
         self._tracer = tracer
         self._duration_histogram = duration_histogram
         self._token_histogram = token_histogram
+        self._tool_duration_histogram = tool_duration_histogram
 
     @dont_throw
     async def __call__(self, wrapped, instance, args, kwargs):
