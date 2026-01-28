@@ -81,6 +81,27 @@ class LangchainInstrumentor(BaseInstrumentor):
             description="Measures number of input and output tokens used",
         )
 
+        # Create agent duration histogram
+        agent_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_AGENT_DURATION,
+            unit="s",
+            description="GenAI agent duration",
+        )
+
+        # Create workflow duration histogram
+        workflow_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_WORKFLOW_DURATION,
+            unit="s",
+            description="GenAI workflow duration",
+        )
+
+        # Create tool duration histogram
+        tool_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_TOOL_DURATION,
+            unit="s",
+            description="GenAI tool duration",
+        )
+
         if not Config.use_legacy_attributes:
             logger_provider = kwargs.get("logger_provider")
             Config.event_logger = get_logger(
@@ -88,7 +109,8 @@ class LangchainInstrumentor(BaseInstrumentor):
             )
 
         traceloopCallbackHandler = TraceloopCallbackHandler(
-            tracer, duration_histogram, token_histogram
+            tracer, duration_histogram, token_histogram,
+            agent_duration_histogram, workflow_duration_histogram, tool_duration_histogram
         )
         wrap_function_wrapper(
             module="langchain_core.callbacks",

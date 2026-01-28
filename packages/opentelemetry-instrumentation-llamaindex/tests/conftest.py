@@ -15,6 +15,8 @@ from opentelemetry.sdk._logs.export import (
     InMemoryLogExporter,
     SimpleLogRecordProcessor,
 )
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -35,6 +37,18 @@ def fixture_tracer_provider(span_exporter):
     return provider
 
 
+@pytest.fixture(scope="session", name="metric_reader")
+def fixture_metric_reader():
+    reader = InMemoryMetricReader()
+    yield reader
+
+
+@pytest.fixture(scope="session", name="meter_provider")
+def fixture_meter_provider(metric_reader):
+    provider = MeterProvider(metric_readers=[metric_reader])
+    return provider
+
+
 @pytest.fixture(scope="function", name="log_exporter")
 def fixture_log_exporter():
     exporter = InMemoryLogExporter()
@@ -49,16 +63,16 @@ def fixture_logger_provider(log_exporter):
 
 
 @pytest.fixture(scope="session")
-def instrument_legacy(tracer_provider):
+def instrument_legacy(tracer_provider, meter_provider):
     openai_instrumentor = OpenAIInstrumentor()
     chroma_instrumentor = ChromaInstrumentor()
     cohere_instrumentor = CohereInstrumentor()
     instrumentor = LlamaIndexInstrumentor()
 
-    openai_instrumentor.instrument(tracer_provider=tracer_provider)
+    openai_instrumentor.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
     chroma_instrumentor.instrument(tracer_provider=tracer_provider)
-    cohere_instrumentor.instrument(tracer_provider=tracer_provider)
-    instrumentor.instrument(tracer_provider=tracer_provider)
+    cohere_instrumentor.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
+    instrumentor.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
 
     yield instrumentor
 
