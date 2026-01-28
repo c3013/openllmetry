@@ -14,9 +14,9 @@ TRACELOOP_TRACE_CONTENT = "TRACELOOP_TRACE_CONTENT"
 
 
 def _with_tracer_wrapper(func):
-    def _with_tracer(tracer):
+    def _with_tracer(tracer, *wrapper_args):
         def wrapper(wrapped, instance, args, kwargs):
-            return func(tracer, wrapped, instance, args, kwargs)
+            return func(tracer, *wrapper_args, wrapped, instance, args, kwargs)
 
         return wrapper
 

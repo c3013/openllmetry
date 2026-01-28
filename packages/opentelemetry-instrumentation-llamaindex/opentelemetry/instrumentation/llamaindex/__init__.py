@@ -38,6 +38,8 @@ from opentelemetry.instrumentation.llamaindex.retriever_query_engine_instrumento
     RetrieverQueryEngineInstrumentor,
 )
 from opentelemetry.instrumentation.llamaindex.version import __version__
+from opentelemetry.metrics import get_meter
+from opentelemetry.semconv_ai import Meters
 from opentelemetry.trace import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,28 @@ class LlamaIndexInstrumentor(BaseInstrumentor):
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(__name__, __version__, tracer_provider)
 
+        meter_provider = kwargs.get("meter_provider")
+        meter = get_meter(__name__, __version__, meter_provider)
+
+        # Create histogram metrics
+        agent_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_AGENT_DURATION,
+            unit="s",
+            description="GenAI agent duration",
+        )
+
+        workflow_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_WORKFLOW_DURATION,
+            unit="s",
+            description="GenAI workflow duration",
+        )
+
+        tool_duration_histogram = meter.create_histogram(
+            name=Meters.GEN_AI_TOOL_DURATION,
+            unit="s",
+            description="GenAI tool duration",
+        )
+
         if not Config.use_legacy_attributes:
             logger_provider = kwargs.get("logger_provider")
             Config.event_logger = get_logger(
@@ -89,9 +113,9 @@ class LlamaIndexInstrumentor(BaseInstrumentor):
             BaseSynthesizerInstrumentor(tracer).instrument()
             BaseEmbeddingInstrumentor(tracer).instrument()
             CustomLLMInstrumentor(tracer).instrument()
-            QueryPipelineInstrumentor(tracer).instrument()
-            BaseAgentInstrumentor(tracer).instrument()
-            BaseToolInstrumentor(tracer).instrument()
+            QueryPipelineInstrumentor(tracer, workflow_duration_histogram).instrument()
+            BaseAgentInstrumentor(tracer, agent_duration_histogram).instrument()
+            BaseToolInstrumentor(tracer, tool_duration_histogram).instrument()
 
         # LlamaParse instrumentation doesn't work for all versions
         try:
