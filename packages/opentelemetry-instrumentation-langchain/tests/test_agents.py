@@ -9,6 +9,7 @@ from opentelemetry.sdk._logs import LogData
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
+from opentelemetry.semconv_ai import SpanAttributes
 
 # Constant prompt template to replace hub.pull("hwchase17/openai-functions-agent")
 OPENAI_FUNCTIONS_AGENT_PROMPT = ChatPromptTemplate.from_messages(
@@ -55,6 +56,16 @@ def test_agents(instrument_legacy, span_exporter, log_exporter):
         "RunnableSequence.task",
         "AgentExecutor.workflow",
     }
+
+    # Verify that the selected skill name is recorded on the AgentExecutor workflow span.
+    # on_agent_action is not triggered for LCEL agents; the skill name is propagated
+    # from on_tool_start instead, which fires reliably for all agent types.
+    workflow_span = next(
+        span for span in spans if span.name == "AgentExecutor.workflow"
+    )
+    assert workflow_span.attributes.get(SpanAttributes.GEN_AI_SKILL_NAME) == "tavily_search_results_json", (
+        "Expected gen_ai.skill.name to be set on AgentExecutor.workflow span"
+    )
 
     logs = log_exporter.get_finished_logs()
     assert (
