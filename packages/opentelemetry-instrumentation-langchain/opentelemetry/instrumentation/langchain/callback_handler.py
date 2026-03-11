@@ -3,6 +3,7 @@ import time
 from typing import Any, Dict, List, Optional, Type, Union
 from uuid import UUID
 
+from langchain_core.agents import AgentAction
 from langchain_core.callbacks import (
     BaseCallbackHandler,
     CallbackManager,
@@ -816,6 +817,29 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
     ) -> None:
         """Run when agent errors."""
         self._handle_error(error, run_id, parent_run_id, **kwargs)
+
+    @dont_throw
+    def on_agent_action(
+        self,
+        action: AgentAction,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Run on agent action (when agent selects a skill to use).
+
+        Records the selected skill name on the agent (AgentExecutor workflow) span
+        so that the skill selection is visible at the agent workflow level.
+        """
+        if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
+            return
+
+        if parent_run_id is not None and parent_run_id in self.spans:
+            parent_span = self.spans[parent_run_id].span
+            _set_span_attribute(
+                parent_span, SpanAttributes.GEN_AI_SKILL_NAME, action.tool
+            )
 
     @dont_throw
     def on_retriever_error(
