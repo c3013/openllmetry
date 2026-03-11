@@ -674,6 +674,16 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
             name,
             entity_path,
         )
+        _set_span_attribute(
+            span, SpanAttributes.GEN_AI_OPERATION_NAME, "load_skill"
+        )
+        _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_NAME, name)
+        serialized_data = serialized or {}
+        skill_info = serialized_data.get("description") or (
+            serialized_data.get("kwargs") or {}
+        ).get("description")
+        if skill_info:
+            _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_INFO, skill_info)
         if not should_emit_events() and should_send_prompts():
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_INPUT,

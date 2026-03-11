@@ -244,6 +244,13 @@ class SpanAttributes:
     MCP_SESSION_INIT_OPTIONS = "mcp.session.init_options"
     MCP_RESPONSE_VALUE = "mcp.response.value"
 
+    # GenAI Operation
+    GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
+
+    # Skill
+    GEN_AI_SKILL_NAME = "gen_ai.skill.name"
+    GEN_AI_SKILL_INFO = "gen_ai.skill.info"
+
 
 class Events(Enum):
     DB_QUERY_EMBEDDINGS = "db.query.embeddings"
