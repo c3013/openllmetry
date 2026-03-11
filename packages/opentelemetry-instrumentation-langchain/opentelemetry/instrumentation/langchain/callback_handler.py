@@ -685,6 +685,13 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         ).get("description")
         if skill_info:
             _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_INFO, skill_info)
+        # Also record the selected skill name on the parent (agent/workflow) span.
+        # This is the reliable path for both LCEL and legacy agents because
+        # on_agent_action is only triggered by legacy langchain AgentExecutor.
+        if parent_run_id is not None and parent_run_id in self.spans:
+            _set_span_attribute(
+                self.spans[parent_run_id].span, SpanAttributes.GEN_AI_SKILL_NAME, name
+            )
         if not should_emit_events() and should_send_prompts():
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_INPUT,

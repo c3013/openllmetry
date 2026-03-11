@@ -67,23 +67,79 @@ def test_skill_name_attribute(instrument_legacy, span_exporter):
     ), "Expected gen_ai.operation.name to be 'load_skill'"
 
 
+def _make_handler(tracer_provider):
+    """Create a TraceloopCallbackHandler for testing."""
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    tracer = tracer_provider.get_tracer("test")
+    meter = MeterProvider().get_meter("test")
+    return TraceloopCallbackHandler(
+        tracer,
+        meter.create_histogram("test.duration"),
+        meter.create_histogram("test.tokens"),
+    )
+
+
+def test_tool_start_propagates_skill_name_to_parent_span(
+    tracer_provider, span_exporter
+):
+    """Test that on_tool_start records the skill name on the parent (agent) span.
+
+    This is the reliable path for all agent types (LCEL, legacy, LangGraph).
+    When a tool runs, its skill name is propagated up to the parent agent span
+    directly from on_tool_start, without depending on on_agent_action.
+    """
+    handler = _make_handler(tracer_provider)
+
+    agent_run_id = uuid.uuid4()
+    tool_run_id = uuid.uuid4()
+
+    # Simulate on_chain_start for the AgentExecutor workflow span
+    handler.on_chain_start(
+        serialized={"name": "AgentExecutor", "id": ["AgentExecutor"]},
+        inputs={"input": "test"},
+        run_id=agent_run_id,
+        parent_run_id=None,
+    )
+
+    # Simulate on_tool_start — parent_run_id points to the AgentExecutor span
+    handler.on_tool_start(
+        serialized={
+            "name": "search_docs",
+            "description": "Search internal documentation",
+        },
+        input_str="opentelemetry setup",
+        run_id=tool_run_id,
+        parent_run_id=agent_run_id,
+    )
+
+    # The agent span should have gen_ai.skill.name set via on_tool_start propagation
+    agent_span = handler.spans[agent_run_id].span
+    assert agent_span.attributes.get(SpanAttributes.GEN_AI_SKILL_NAME) == "search_docs", (
+        "Expected gen_ai.skill.name on parent agent span to be set from on_tool_start"
+    )
+
+    # Finish tool and agent spans
+    handler.on_tool_end(output="result", run_id=tool_run_id)
+    handler.on_chain_end(outputs={"output": "done"}, run_id=agent_run_id)
+
+    finished_spans = span_exporter.get_finished_spans()
+    agent_spans = [s for s in finished_spans if s.name == "AgentExecutor.workflow"]
+    assert len(agent_spans) == 1
+    assert (
+        agent_spans[0].attributes.get(SpanAttributes.GEN_AI_SKILL_NAME) == "search_docs"
+    ), "Expected gen_ai.skill.name on finished AgentExecutor span"
+
+
 def test_agent_action_records_skill_name_on_agent_span(
     tracer_provider, span_exporter
 ):
     """Test that on_agent_action records the selected skill name on the agent span.
 
-    When an agent selects a skill to use, the skill name should be recorded
-    at the agent (create_deep_agent) layer, not just in the tool's own span.
+    This path is for legacy langchain AgentExecutor agents only.
+    For LCEL and LangGraph agents, use on_tool_start propagation instead.
     """
-    from opentelemetry.sdk.metrics import MeterProvider
-
-    tracer = tracer_provider.get_tracer("test")
-    meter_provider = MeterProvider()
-    meter = meter_provider.get_meter("test")
-    duration_histogram = meter.create_histogram("test.duration")
-    token_histogram = meter.create_histogram("test.tokens")
-
-    handler = TraceloopCallbackHandler(tracer, duration_histogram, token_histogram)
+    handler = _make_handler(tracer_provider)
 
     agent_run_id = uuid.uuid4()
 
@@ -95,32 +151,25 @@ def test_agent_action_records_skill_name_on_agent_span(
         parent_run_id=None,
     )
 
-    # Simulate on_agent_action (when agent selects a skill at the create_deep_agent layer)
+    # Simulate on_agent_action (legacy agent path)
     action = AgentAction(
         tool="search_docs",
         tool_input="opentelemetry setup",
         log="I should search for documentation about OpenTelemetry setup.",
     )
-    action_run_id = uuid.uuid4()
     handler.on_agent_action(
         action,
-        run_id=action_run_id,
+        run_id=uuid.uuid4(),
         parent_run_id=agent_run_id,
     )
 
     # Verify that the agent span has the selected skill name recorded
-    agent_span_holder = handler.spans[agent_run_id]
-    agent_span = agent_span_holder.span
-
+    agent_span = handler.spans[agent_run_id].span
     assert agent_span.attributes.get(SpanAttributes.GEN_AI_SKILL_NAME) == "search_docs", (
         "Expected gen_ai.skill.name to be 'search_docs' on the agent span"
     )
 
-    # Clean up - end the agent chain span
-    handler.on_chain_end(
-        outputs={"output": "done"},
-        run_id=agent_run_id,
-    )
+    handler.on_chain_end(outputs={"output": "done"}, run_id=agent_run_id)
 
     finished_spans = span_exporter.get_finished_spans()
     agent_spans = [s for s in finished_spans if s.name == "AgentExecutor.workflow"]
