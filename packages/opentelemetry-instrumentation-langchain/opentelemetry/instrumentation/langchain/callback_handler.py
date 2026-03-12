@@ -3,6 +3,7 @@ import time
 from typing import Any, Dict, List, Optional, Type, Union
 from uuid import UUID
 
+from langchain_core.agents import AgentAction
 from langchain_core.callbacks import (
     BaseCallbackHandler,
     CallbackManager,
@@ -42,6 +43,7 @@ from opentelemetry.instrumentation.langchain.span_utils import (
     set_chat_request,
     set_chat_response,
     set_chat_response_usage,
+    set_input_messages_attribute,
     set_llm_request,
     set_request_params,
 )
@@ -498,6 +500,7 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         set_request_params(span, kwargs, self.spans[run_id])
         if should_emit_events():
             self._emit_chat_input_events(messages)
+            set_input_messages_attribute(span, messages)
         else:
             set_chat_request(span, serialized, messages, kwargs, self.spans[run_id])
 
@@ -674,6 +677,31 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
             name,
             entity_path,
         )
+        _set_span_attribute(
+            span, SpanAttributes.GEN_AI_OPERATION_NAME, "load_skill"
+        )
+        _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_NAME, name)
+        serialized_data = serialized or {}
+        skill_info = serialized_data.get("description") or (
+            serialized_data.get("kwargs") or {}
+        ).get("description")
+        if skill_info:
+            _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_INFO, skill_info)
+        metadata_json = (
+            json.dumps(metadata, cls=CallbackFilteredJSONEncoder) if metadata else None
+        )
+        if metadata_json:
+            _set_span_attribute(span, SpanAttributes.GEN_AI_SKILL_METADATA, metadata_json)
+        # Also record the selected skill name on the parent (agent/workflow) span.
+        # This is the reliable path for both LCEL and legacy agents because
+        # on_agent_action is only triggered by legacy langchain AgentExecutor.
+        if parent_run_id is not None and parent_run_id in self.spans:
+            parent_span = self.spans[parent_run_id].span
+            _set_span_attribute(parent_span, SpanAttributes.GEN_AI_SKILL_NAME, name)
+            if metadata_json:
+                _set_span_attribute(
+                    parent_span, SpanAttributes.GEN_AI_SKILL_METADATA, metadata_json
+                )
         if not should_emit_events() and should_send_prompts():
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_INPUT,
@@ -806,6 +834,29 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
     ) -> None:
         """Run when agent errors."""
         self._handle_error(error, run_id, parent_run_id, **kwargs)
+
+    @dont_throw
+    def on_agent_action(
+        self,
+        action: AgentAction,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Run on agent action (when agent selects a skill to use).
+
+        Records the selected skill name on the agent (AgentExecutor workflow) span
+        so that the skill selection is visible at the agent workflow level.
+        """
+        if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
+            return
+
+        if parent_run_id is not None and parent_run_id in self.spans:
+            parent_span = self.spans[parent_run_id].span
+            _set_span_attribute(
+                parent_span, SpanAttributes.GEN_AI_SKILL_NAME, action.tool
+            )
 
     @dont_throw
     def on_retriever_error(
