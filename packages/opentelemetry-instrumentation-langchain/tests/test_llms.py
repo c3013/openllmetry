@@ -673,6 +673,22 @@ def test_anthropic(instrument_legacy, span_exporter, log_exporter):
         anthropic_span.attributes["gen_ai.response.id"]
         == "msg_017fMG9SRDFTBhcD1ibtN1nK"
     )
+
+    # Verify gen_ai.input.messages attribute (new semantic convention)
+    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES in anthropic_span.attributes
+    input_messages = json.loads(anthropic_span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES])
+    assert len(input_messages) == 2
+    assert input_messages[0]["role"] == "system"
+    assert input_messages[0]["content"] == "You are a helpful assistant"
+    assert input_messages[1]["role"] == "user"
+    assert input_messages[1]["content"] == "tell me a short joke"
+
+    # Verify gen_ai.output.messages attribute (new semantic convention)
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES in anthropic_span.attributes
+    output_messages = json.loads(anthropic_span.attributes[GenAIAttributes.GEN_AI_OUTPUT_MESSAGES])
+    assert len(output_messages) == 1
+    assert output_messages[0]["role"] == "assistant"
+    assert output_messages[0]["content"] == response.content
     output = json.loads(
         workflow_span.attributes[SpanAttributes.TRACELOOP_ENTITY_OUTPUT]
     )
@@ -744,6 +760,22 @@ def test_anthropic_with_events_with_content(
         == "msg_017fMG9SRDFTBhcD1ibtN1nK"
     )
 
+    # Verify gen_ai.input.messages attribute (new semantic convention)
+    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES in anthropic_span.attributes
+    input_messages = json.loads(anthropic_span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES])
+    assert len(input_messages) == 2
+    assert input_messages[0]["role"] == "system"
+    assert input_messages[0]["content"] == "You are a helpful assistant"
+    assert input_messages[1]["role"] == "user"
+    assert input_messages[1]["content"] == "tell me a short joke"
+
+    # Verify gen_ai.output.messages attribute (new semantic convention)
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES in anthropic_span.attributes
+    output_messages = json.loads(anthropic_span.attributes[GenAIAttributes.GEN_AI_OUTPUT_MESSAGES])
+    assert len(output_messages) == 1
+    assert output_messages[0]["role"] == "assistant"
+    assert output_messages[0]["content"] == response.content
+
     logs = log_exporter.get_finished_logs()
     assert len(logs) == 3
 
@@ -763,7 +795,7 @@ def test_anthropic_with_events_with_content(
         "finish_reason": "unknown",
         "message": {"content": response.content},
     }
-    assert_message_in_logs(logs[2], "gen_ai.choice", choice_event)  # logs[2] does not exist
+    assert_message_in_logs(logs[2], "gen_ai.choice", choice_event)
 
 
 @pytest.mark.vcr
@@ -800,6 +832,10 @@ def test_anthropic_with_events_with_no_content(
         == "msg_017fMG9SRDFTBhcD1ibtN1nK"
     )
 
+    # Verify gen_ai.input.messages and gen_ai.output.messages are NOT set when content is disabled
+    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES not in anthropic_span.attributes
+    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in anthropic_span.attributes
+
     logs = log_exporter.get_finished_logs()
     assert len(logs) == 3
 
@@ -815,7 +851,7 @@ def test_anthropic_with_events_with_no_content(
         "finish_reason": "unknown",
         "message": {},
     }
-    assert_message_in_logs(logs[2], "gen_ai.choice", choice_event)  # logs[2] does not exist
+    assert_message_in_logs(logs[2], "gen_ai.choice", choice_event)
 
 
 @pytest.mark.vcr

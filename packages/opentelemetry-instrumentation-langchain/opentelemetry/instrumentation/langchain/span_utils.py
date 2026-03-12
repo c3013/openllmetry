@@ -139,6 +139,53 @@ def set_llm_request(
             )
 
 
+def _normalize_tool_calls(tool_calls) -> list:
+    """Normalize tool calls to a list of dicts."""
+    return [dict(tc) if not isinstance(tc, dict) else tc for tc in tool_calls]
+
+
+def _build_input_message_dict(msg: BaseMessage) -> dict:
+    """Build a message dict for gen_ai.input.messages from a BaseMessage."""
+    role = _message_type_to_role(msg.type)
+    content = (
+        msg.content
+        if isinstance(msg.content, str)
+        else json.dumps(msg.content, cls=CallbackFilteredJSONEncoder)
+    )
+    tool_calls = (
+        msg.tool_calls
+        if hasattr(msg, "tool_calls")
+        else msg.additional_kwargs.get("tool_calls")
+    )
+    message_dict = {"role": role}
+    if content:
+        message_dict["content"] = content
+    if tool_calls:
+        message_dict["tool_calls"] = _normalize_tool_calls(tool_calls)
+    if msg.type == "tool" and hasattr(msg, "tool_call_id"):
+        message_dict["tool_call_id"] = msg.tool_call_id
+    return message_dict
+
+
+def set_input_messages_attribute(
+    span: Span,
+    messages: list[list[BaseMessage]],
+) -> None:
+    if not should_send_prompts():
+        return
+
+    input_messages = [
+        _build_input_message_dict(msg)
+        for message_list in messages
+        for msg in message_list
+    ]
+    _set_span_attribute(
+        span,
+        GenAIAttributes.GEN_AI_INPUT_MESSAGES,
+        json.dumps(input_messages, cls=CallbackFilteredJSONEncoder),
+    )
+
+
 def set_chat_request(
     span: Span,
     serialized: dict[str, Any],
@@ -163,12 +210,14 @@ def set_chat_request(
             )
 
         i = 0
+        input_messages = []
         for message in messages:
             for msg in message:
+                role = _message_type_to_role(msg.type)
                 _set_span_attribute(
                     span,
                     f"{GenAIAttributes.GEN_AI_PROMPT}.{i}.role",
-                    _message_type_to_role(msg.type),
+                    role,
                 )
                 tool_calls = (
                     msg.tool_calls
@@ -200,7 +249,15 @@ def set_chat_request(
                         msg.tool_call_id,
                     )
 
+                input_messages.append(_build_input_message_dict(msg))
+
                 i += 1
+
+        _set_span_attribute(
+            span,
+            GenAIAttributes.GEN_AI_INPUT_MESSAGES,
+            json.dumps(input_messages, cls=CallbackFilteredJSONEncoder),
+        )
 
 
 def set_chat_response(span: Span, response: LLMResult) -> None:
@@ -208,6 +265,7 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
         return
 
     i = 0
+    output_messages = []
     for generations in response.generations:
         for generation in generations:
             prefix = f"{GenAIAttributes.GEN_AI_COMPLETION}.{i}"
@@ -243,6 +301,7 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
                 )
 
             # Handle tool calls and function calls
+            tool_calls = None
             if hasattr(generation, "message") and generation.message:
                 # Handle legacy function_call format (single function call)
                 if generation.message.additional_kwargs.get("function_call"):
@@ -274,7 +333,20 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
                         "assistant",
                     )
                     _set_chat_tool_calls(span, prefix, tool_calls)
+
+            message_dict = {"role": "assistant"}
+            if content:
+                message_dict["content"] = content
+            if tool_calls and isinstance(tool_calls, list):
+                message_dict["tool_calls"] = _normalize_tool_calls(tool_calls)
+            output_messages.append(message_dict)
             i += 1
+
+    _set_span_attribute(
+        span,
+        GenAIAttributes.GEN_AI_OUTPUT_MESSAGES,
+        json.dumps(output_messages, cls=CallbackFilteredJSONEncoder),
+    )
 
 
 def set_chat_response_usage(

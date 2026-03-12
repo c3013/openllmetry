@@ -43,6 +43,7 @@ from opentelemetry.instrumentation.langchain.span_utils import (
     set_chat_request,
     set_chat_response,
     set_chat_response_usage,
+    set_input_messages_attribute,
     set_llm_request,
     set_request_params,
 )
@@ -499,6 +500,7 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         set_request_params(span, kwargs, self.spans[run_id])
         if should_emit_events():
             self._emit_chat_input_events(messages)
+            set_input_messages_attribute(span, messages)
         else:
             set_chat_request(span, serialized, messages, kwargs, self.spans[run_id])
 
