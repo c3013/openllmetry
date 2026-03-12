@@ -579,6 +579,8 @@ class TraceloopCallbackHandler(BaseCallbackHandler):
         set_request_params(span, kwargs, self.spans[run_id])
         if should_emit_events():
             self._emit_chat_input_events(messages)
+            # Also set span attributes for backward compatibility
+            set_chat_request(span, serialized, messages, kwargs, self.spans[run_id])
         else:
             set_chat_request(span, serialized, messages, kwargs, self.spans[run_id])
 
