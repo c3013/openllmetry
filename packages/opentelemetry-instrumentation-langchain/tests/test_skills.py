@@ -1,7 +1,8 @@
+import json
 import uuid
 
 from langchain_core.agents import AgentAction
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool, tool
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.instrumentation.langchain.callback_handler import (
     TraceloopCallbackHandler,
@@ -177,3 +178,67 @@ def test_agent_action_records_skill_name_on_agent_span(
     assert (
         agent_spans[0].attributes.get(SpanAttributes.GEN_AI_SKILL_NAME) == "search_docs"
     ), "Expected gen_ai.skill.name on the finished AgentExecutor span"
+
+
+def test_skill_metadata_recorded_on_tool_span(instrument_legacy, span_exporter):
+    """Test that skill metadata is recorded on the tool span as gen_ai.skill.metadata."""
+    skill = StructuredTool.from_function(
+        func=lambda q: f"Processed: {q}",
+        name="math_skill",
+        description="A skill for math operations",
+        metadata={"skill_type": "math", "version": "1.0", "author": "alice"},
+    )
+    skill.invoke("2+2")
+
+    spans = span_exporter.get_finished_spans()
+    tool_span = next((s for s in spans if s.name == "math_skill.tool"), None)
+    assert tool_span is not None, "Expected math_skill.tool span"
+
+    raw = tool_span.attributes.get(SpanAttributes.GEN_AI_SKILL_METADATA)
+    assert raw is not None, "Expected gen_ai.skill.metadata to be set on tool span"
+    metadata = json.loads(raw)
+    assert metadata == {"skill_type": "math", "version": "1.0", "author": "alice"}, (
+        "Expected gen_ai.skill.metadata to contain the tool's metadata"
+    )
+
+
+def test_skill_metadata_propagated_to_parent_span(tracer_provider, span_exporter):
+    """Test that skill metadata is propagated to the parent (agent/workflow) span."""
+    handler = _make_handler(tracer_provider)
+
+    agent_run_id = uuid.uuid4()
+    tool_run_id = uuid.uuid4()
+
+    handler.on_chain_start(
+        serialized={"name": "AgentExecutor", "id": ["AgentExecutor"]},
+        inputs={"input": "compute"},
+        run_id=agent_run_id,
+        parent_run_id=None,
+    )
+
+    skill_metadata = {"skill_type": "math", "version": "2.0"}
+    handler.on_tool_start(
+        serialized={"name": "math_skill", "description": "A skill for math"},
+        input_str="2+2",
+        run_id=tool_run_id,
+        parent_run_id=agent_run_id,
+        metadata=skill_metadata,
+    )
+
+    # Skill metadata should be set on the parent agent span
+    agent_span = handler.spans[agent_run_id].span
+    raw = agent_span.attributes.get(SpanAttributes.GEN_AI_SKILL_METADATA)
+    assert raw is not None, "Expected gen_ai.skill.metadata on parent agent span"
+    assert json.loads(raw) == skill_metadata, (
+        "Expected gen_ai.skill.metadata on parent span to match the tool's metadata"
+    )
+
+    handler.on_tool_end(output="4", run_id=tool_run_id)
+    handler.on_chain_end(outputs={"output": "done"}, run_id=agent_run_id)
+
+    finished_spans = span_exporter.get_finished_spans()
+    agent_spans = [s for s in finished_spans if s.name == "AgentExecutor.workflow"]
+    assert len(agent_spans) == 1
+    raw = agent_spans[0].attributes.get(SpanAttributes.GEN_AI_SKILL_METADATA)
+    assert raw is not None, "Expected gen_ai.skill.metadata on finished AgentExecutor span"
+    assert json.loads(raw) == skill_metadata

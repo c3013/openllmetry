@@ -250,6 +250,7 @@ class SpanAttributes:
     # Skill
     GEN_AI_SKILL_NAME = "gen_ai.skill.name"
     GEN_AI_SKILL_INFO = "gen_ai.skill.info"
+    GEN_AI_SKILL_METADATA = "gen_ai.skill.metadata"
 
 
 class Events(Enum):
