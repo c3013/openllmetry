@@ -673,6 +673,21 @@ def test_anthropic(instrument_legacy, span_exporter, log_exporter):
         anthropic_span.attributes["gen_ai.response.id"]
         == "msg_017fMG9SRDFTBhcD1ibtN1nK"
     )
+
+    # Validate gen_ai.input.messages and gen_ai.output.messages
+    input_messages = json.loads(
+        anthropic_span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert input_messages == [
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "tell me a short joke"},
+    ]
+    output_messages = json.loads(
+        anthropic_span.attributes[GenAIAttributes.GEN_AI_OUTPUT_MESSAGES]
+    )
+    assert len(output_messages) == 1
+    assert output_messages[0]["role"] == "assistant"
+    assert output_messages[0]["content"] == response.content
     output = json.loads(
         workflow_span.attributes[SpanAttributes.TRACELOOP_ENTITY_OUTPUT]
     )
@@ -743,6 +758,21 @@ def test_anthropic_with_events_with_content(
         anthropic_span.attributes["gen_ai.response.id"]
         == "msg_017fMG9SRDFTBhcD1ibtN1nK"
     )
+
+    # Validate gen_ai.input.messages and gen_ai.output.messages on the span
+    input_messages = json.loads(
+        anthropic_span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert input_messages == [
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "tell me a short joke"},
+    ]
+    output_messages = json.loads(
+        anthropic_span.attributes[GenAIAttributes.GEN_AI_OUTPUT_MESSAGES]
+    )
+    assert len(output_messages) == 1
+    assert output_messages[0]["role"] == "assistant"
+    assert output_messages[0]["content"] == response.content
 
     logs = log_exporter.get_finished_logs()
     assert len(logs) == 3

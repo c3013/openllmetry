@@ -163,12 +163,14 @@ def set_chat_request(
             )
 
         i = 0
+        input_messages = []
         for message in messages:
             for msg in message:
+                role = _message_type_to_role(msg.type)
                 _set_span_attribute(
                     span,
                     f"{GenAIAttributes.GEN_AI_PROMPT}.{i}.role",
-                    _message_type_to_role(msg.type),
+                    role,
                 )
                 tool_calls = (
                     msg.tool_calls
@@ -200,7 +202,20 @@ def set_chat_request(
                         msg.tool_call_id,
                     )
 
+                msg_dict: dict[str, Any] = {"role": role, "content": content}
+                if tool_calls:
+                    msg_dict["tool_calls"] = tool_calls
+                if msg.type == "tool" and hasattr(msg, "tool_call_id"):
+                    msg_dict["tool_call_id"] = msg.tool_call_id
+                input_messages.append(msg_dict)
+
                 i += 1
+
+        _set_span_attribute(
+            span,
+            GenAIAttributes.GEN_AI_INPUT_MESSAGES,
+            json.dumps(input_messages, cls=CallbackFilteredJSONEncoder),
+        )
 
 
 def set_chat_response(span: Span, response: LLMResult) -> None:
@@ -208,13 +223,22 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
         return
 
     i = 0
+    output_messages = []
     for generations in response.generations:
         for generation in generations:
             prefix = f"{GenAIAttributes.GEN_AI_COMPLETION}.{i}"
+            # Use message.type when available (e.g. ChatGeneration), as generation.type
+            # returns the class name (e.g. "ChatGeneration") rather than a role.
+            msg_type = (
+                generation.message.type
+                if hasattr(generation, "message") and generation.message is not None
+                else generation.type
+            )
+            role = _message_type_to_role(msg_type)
             _set_span_attribute(
                 span,
                 f"{prefix}.role",
-                _message_type_to_role(generation.type),
+                role,
             )
 
             # Try to get content from various sources
@@ -235,13 +259,16 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
                 )
 
             # Set finish reason if available
+            finish_reason = None
             if generation.generation_info and generation.generation_info.get("finish_reason"):
+                finish_reason = generation.generation_info.get("finish_reason")
                 _set_span_attribute(
                     span,
                     f"{prefix}.finish_reason",
-                    generation.generation_info.get("finish_reason"),
+                    finish_reason,
                 )
 
+            tool_calls = None
             # Handle tool calls and function calls
             if hasattr(generation, "message") and generation.message:
                 # Handle legacy function_call format (single function call)
@@ -268,13 +295,29 @@ def set_chat_response(span: Span, response: LLMResult) -> None:
                     else generation.message.additional_kwargs.get("tool_calls")
                 )
                 if tool_calls and isinstance(tool_calls, list):
+                    role = "assistant"
                     _set_span_attribute(
                         span,
                         f"{prefix}.role",
-                        "assistant",
+                        role,
                     )
                     _set_chat_tool_calls(span, prefix, tool_calls)
+
+            msg_dict: dict[str, Any] = {"role": role}
+            if content:
+                msg_dict["content"] = content
+            if finish_reason:
+                msg_dict["finish_reason"] = finish_reason
+            if tool_calls and isinstance(tool_calls, list):
+                msg_dict["tool_calls"] = tool_calls
+            output_messages.append(msg_dict)
             i += 1
+
+    _set_span_attribute(
+        span,
+        GenAIAttributes.GEN_AI_OUTPUT_MESSAGES,
+        json.dumps(output_messages, cls=CallbackFilteredJSONEncoder),
+    )
 
 
 def set_chat_response_usage(
