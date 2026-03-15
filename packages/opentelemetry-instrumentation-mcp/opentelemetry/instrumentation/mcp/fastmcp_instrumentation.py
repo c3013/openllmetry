@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 
 from opentelemetry.trace import Tracer
 from opentelemetry.trace.status import Status, StatusCode
@@ -18,15 +19,35 @@ class FastMCPInstrumentor:
     def __init__(self):
         self._tracer = None
         self._server_name = None
+        self._server_operation_duration_histogram = None
+        self._server_session_duration_histogram = None
 
-    def instrument(self, tracer: Tracer):
+    def instrument(
+        self,
+        tracer: Tracer,
+        server_operation_duration_histogram=None,
+        server_session_duration_histogram=None,
+    ):
         """Apply FastMCP-specific instrumentation."""
         self._tracer = tracer
+        self._server_operation_duration_histogram = server_operation_duration_histogram
+        self._server_session_duration_histogram = server_session_duration_histogram
 
-        # Instrument FastMCP server-side tool execution
+        # Instrument FastMCP server-side tool execution (fastmcp >= 3.x)
         register_post_import_hook(
             lambda _: wrap_function_wrapper(
-                "fastmcp.tools.tool_manager", "ToolManager.call_tool", self._fastmcp_tool_wrapper()
+                "fastmcp.server.server",
+                "FastMCP.call_tool",
+                self._fastmcp_tool_wrapper(),
+            ),
+            "fastmcp.server.server",
+        )
+        # Also try the older module path for backward compatibility (fastmcp < 3.x)
+        register_post_import_hook(
+            lambda _: wrap_function_wrapper(
+                "fastmcp.tools.tool_manager",
+                "ToolManager.call_tool",
+                self._fastmcp_tool_wrapper(),
             ),
             "fastmcp.tools.tool_manager",
         )
@@ -66,15 +87,21 @@ class FastMCPInstrumentor:
             if not self._tracer:
                 return await wrapped(*args, **kwargs)
 
-            # Extract tool name from arguments - FastMCP has different call patterns
+            # Extract tool name from arguments
+            # fastmcp >= 3.x: call_tool(self, name, arguments=None, ...)
+            # fastmcp < 3.x (ToolManager): call_tool(self, key, arguments, ...)
             tool_key = None
             tool_arguments = {}
 
-            # Pattern 1: kwargs with 'key' parameter
-            if kwargs and 'key' in kwargs:
+            # Pattern 1: kwargs with 'name' parameter (fastmcp >= 3.x)
+            if kwargs and 'name' in kwargs:
+                tool_key = kwargs.get('name')
+                tool_arguments = kwargs.get('arguments') or {}
+            # Pattern 2: kwargs with 'key' parameter (fastmcp < 3.x)
+            elif kwargs and 'key' in kwargs:
                 tool_key = kwargs.get('key')
-                tool_arguments = kwargs.get('arguments', {})
-            # Pattern 2: positional args (tool_name, arguments)
+                tool_arguments = kwargs.get('arguments') or {}
+            # Pattern 3: positional args (tool_name, arguments)
             elif args and len(args) >= 1:
                 tool_key = args[0]
                 tool_arguments = args[1] if len(args) > 1 else {}
@@ -82,6 +109,7 @@ class FastMCPInstrumentor:
             entity_name = tool_key if tool_key else "unknown_tool"
 
             # Create parent server.mcp span
+            server_start_time = time.time()
             with self._tracer.start_as_current_span("mcp.server") as mcp_span:
                 mcp_span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND, "server")
                 mcp_span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_NAME, "mcp.server")
@@ -90,6 +118,7 @@ class FastMCPInstrumentor:
 
                 # Create nested tool span
                 span_name = f"{entity_name}.tool"
+                tool_start_time = time.time()
                 with self._tracer.start_as_current_span(span_name) as tool_span:
                     tool_span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND, TraceloopSpanKindValues.TOOL.value)
                     tool_span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_NAME, entity_name)
@@ -118,6 +147,18 @@ class FastMCPInstrumentor:
                         mcp_span.set_attribute(ERROR_TYPE, type(e).__name__)
                         mcp_span.record_exception(e)
                         mcp_span.set_status(Status(StatusCode.ERROR, str(e)))
+
+                        # Record server operation duration metric on error
+                        if self._server_operation_duration_histogram is not None:
+                            duration = time.time() - tool_start_time
+                            self._server_operation_duration_histogram.record(
+                                duration,
+                                attributes={
+                                    SpanAttributes.MCP_METHOD_NAME: "tools/call",
+                                    "gen_ai.tool.name": entity_name,
+                                    "error.type": type(e).__name__,
+                                },
+                            )
                         raise
 
                     try:
@@ -149,7 +190,24 @@ class FastMCPInstrumentor:
                         mcp_span.set_status(Status(StatusCode.OK))
                     except Exception:
                         pass
-                    return result
+
+                    # Record server operation duration metric on success
+                    if self._server_operation_duration_histogram is not None:
+                        duration = time.time() - tool_start_time
+                        self._server_operation_duration_histogram.record(
+                            duration,
+                            attributes={
+                                SpanAttributes.MCP_METHOD_NAME: "tools/call",
+                                "gen_ai.tool.name": entity_name,
+                            },
+                        )
+
+                # Record server session duration metric
+                if self._server_session_duration_histogram is not None:
+                    session_duration = time.time() - server_start_time
+                    self._server_session_duration_histogram.record(session_duration)
+
+                return result
 
         return traced_method
 

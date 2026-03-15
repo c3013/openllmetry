@@ -3,22 +3,28 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Callable, Collection, Tuple, Union, cast
 import json
 import logging
+import time
 
 from opentelemetry import context, propagate
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.metrics import get_meter
 from opentelemetry.trace import get_tracer, Tracer
 from wrapt import ObjectProxy, register_post_import_hook, wrap_function_wrapper
 from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.semconv_ai import SpanAttributes, TraceloopSpanKindValues
+from opentelemetry.semconv_ai import Meters, SpanAttributes, TraceloopSpanKindValues
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 
 from opentelemetry.instrumentation.mcp.version import __version__
-from opentelemetry.instrumentation.mcp.utils import dont_throw, Config
+from opentelemetry.instrumentation.mcp.utils import dont_throw, Config, is_metrics_enabled
 from opentelemetry.instrumentation.mcp.fastmcp_instrumentation import (
     FastMCPInstrumentor,
 )
+
+_MCP_OPERATION_DURATION_BUCKETS = [
+    0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300
+]
 
 _instruments = ("mcp >= 1.6.0",)
 
@@ -36,15 +42,60 @@ class McpInstrumentor(BaseInstrumentor):
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(__name__, __version__, tracer_provider)
 
+        meter_provider = kwargs.get("meter_provider")
+        meter = get_meter(__name__, __version__, meter_provider)
+
+        if is_metrics_enabled():
+            client_operation_duration_histogram = meter.create_histogram(
+                name=Meters.MCP_CLIENT_OPERATION_DURATION,
+                unit="s",
+                description=(
+                    "The duration of the MCP request or notification as observed on the sender "
+                    "from the time it was sent until the response or ack is received."
+                ),
+                explicit_bucket_boundaries_advisory=_MCP_OPERATION_DURATION_BUCKETS,
+            )
+            client_session_duration_histogram = meter.create_histogram(
+                name=Meters.MCP_CLIENT_SESSION_DURATION,
+                unit="s",
+                description="Duration of the MCP client session.",
+                explicit_bucket_boundaries_advisory=_MCP_OPERATION_DURATION_BUCKETS,
+            )
+            server_operation_duration_histogram = meter.create_histogram(
+                name=Meters.MCP_SERVER_OPERATION_DURATION,
+                unit="s",
+                description="The duration of the MCP request or notification as observed on the receiver/server side.",
+                explicit_bucket_boundaries_advisory=_MCP_OPERATION_DURATION_BUCKETS,
+            )
+            server_session_duration_histogram = meter.create_histogram(
+                name=Meters.MCP_SERVER_SESSION_DURATION,
+                unit="s",
+                description="Duration of the MCP server session.",
+                explicit_bucket_boundaries_advisory=_MCP_OPERATION_DURATION_BUCKETS,
+            )
+        else:
+            (
+                client_operation_duration_histogram,
+                client_session_duration_histogram,
+                server_operation_duration_histogram,
+                server_session_duration_histogram,
+            ) = (None, None, None, None)
+
         # Instrument FastMCP
-        self._fastmcp_instrumentor.instrument(tracer)
+        self._fastmcp_instrumentor.instrument(
+            tracer,
+            server_operation_duration_histogram=server_operation_duration_histogram,
+            server_session_duration_histogram=server_session_duration_histogram,
+        )
 
         # Instrument FastMCP Client to create a session-level span
         register_post_import_hook(
             lambda _: wrap_function_wrapper(
                 "fastmcp.client",
                 "Client.__aenter__",
-                self._fastmcp_client_enter_wrapper(tracer),
+                self._fastmcp_client_enter_wrapper(
+                    tracer, client_session_duration_histogram
+                ),
             ),
             "fastmcp.client",
         )
@@ -52,7 +103,9 @@ class McpInstrumentor(BaseInstrumentor):
             lambda _: wrap_function_wrapper(
                 "fastmcp.client",
                 "Client.__aexit__",
-                self._fastmcp_client_exit_wrapper(tracer),
+                self._fastmcp_client_exit_wrapper(
+                    tracer, client_session_duration_histogram
+                ),
             ),
             "fastmcp.client",
         )
@@ -110,7 +163,7 @@ class McpInstrumentor(BaseInstrumentor):
         wrap_function_wrapper(
             "mcp.shared.session",
             "BaseSession.send_request",
-            self.patch_mcp_client(tracer),
+            self.patch_mcp_client(tracer, client_operation_duration_histogram),
         )
 
     def _uninstrument(self, **kwargs):
@@ -177,7 +230,7 @@ class McpInstrumentor(BaseInstrumentor):
 
         return traced_method
 
-    def patch_mcp_client(self, tracer: Tracer):
+    def patch_mcp_client(self, tracer: Tracer, client_operation_duration_histogram=None):
         @dont_throw
         async def traced_method(wrapped, instance, args, kwargs):
             meta = None
@@ -201,16 +254,27 @@ class McpInstrumentor(BaseInstrumentor):
             # Create different span types based on method
             if method == "tools/call":
                 return await self._handle_tool_call(
-                    tracer, method, params, args, kwargs, wrapped
+                    tracer,
+                    method,
+                    params,
+                    args,
+                    kwargs,
+                    wrapped,
+                    client_operation_duration_histogram,
                 )
             else:
                 return await self._handle_mcp_method(
-                    tracer, method, args, kwargs, wrapped
+                    tracer,
+                    method,
+                    args,
+                    kwargs,
+                    wrapped,
+                    client_operation_duration_histogram,
                 )
 
         return traced_method
 
-    def _fastmcp_client_enter_wrapper(self, tracer):
+    def _fastmcp_client_enter_wrapper(self, tracer, client_session_duration_histogram=None):
         """Wrapper for FastMCP Client.__aenter__ to start a session trace"""
 
         @dont_throw
@@ -223,8 +287,14 @@ class McpInstrumentor(BaseInstrumentor):
                 SpanAttributes.TRACELOOP_ENTITY_NAME, "mcp.client.session"
             )
 
-            # Store the span context manager on the instance to properly exit it later
+            # Store the span context manager and session start time on the instance
             setattr(instance, "_tracing_session_context_manager", span_context_manager)
+            setattr(instance, "_tracing_session_start_time", time.time())
+            setattr(
+                instance,
+                "_tracing_session_duration_histogram",
+                client_session_duration_histogram,
+            )
 
             try:
                 # Call the original method
@@ -238,7 +308,7 @@ class McpInstrumentor(BaseInstrumentor):
 
         return traced_method
 
-    def _fastmcp_client_exit_wrapper(self, tracer):
+    def _fastmcp_client_exit_wrapper(self, tracer, client_session_duration_histogram=None):
         """Wrapper for FastMCP Client.__aexit__ to end the session trace"""
 
         @dont_throw
@@ -246,6 +316,17 @@ class McpInstrumentor(BaseInstrumentor):
             try:
                 # Call the original method first
                 result = await wrapped(*args, **kwargs)
+
+                # Record client session duration metric
+                session_start = getattr(instance, "_tracing_session_start_time", None)
+                histogram = getattr(
+                    instance,
+                    "_tracing_session_duration_histogram",
+                    client_session_duration_histogram,
+                )
+                if session_start is not None and histogram is not None:
+                    duration = time.time() - session_start
+                    histogram.record(duration)
 
                 # End the session span context manager
                 context_manager = getattr(
@@ -256,6 +337,18 @@ class McpInstrumentor(BaseInstrumentor):
 
                 return result
             except Exception as e:
+                # Record client session duration metric on error
+                session_start = getattr(instance, "_tracing_session_start_time", None)
+                histogram = getattr(
+                    instance,
+                    "_tracing_session_duration_histogram",
+                    client_session_duration_histogram,
+                )
+                if session_start is not None and histogram is not None:
+                    duration = time.time() - session_start
+                    histogram.record(
+                        duration, attributes={"error.type": type(e).__name__}
+                    )
                 # End the session span context manager with exception info
                 context_manager = getattr(
                     instance, "_tracing_session_context_manager", None
@@ -266,7 +359,16 @@ class McpInstrumentor(BaseInstrumentor):
 
         return traced_method
 
-    async def _handle_tool_call(self, tracer, method, params, args, kwargs, wrapped):
+    async def _handle_tool_call(
+        self,
+        tracer,
+        method,
+        params,
+        args,
+        kwargs,
+        wrapped,
+        client_operation_duration_histogram=None,
+    ):
         """Handle tools/call with tool semantics"""
         # Extract the actual tool name
         entity_name = method
@@ -282,6 +384,7 @@ class McpInstrumentor(BaseInstrumentor):
             except Exception:
                 pass
 
+        start_time = time.time()
         with tracer.start_as_current_span(span_name) as span:
             # Set tool-specific attributes
             span.set_attribute(
@@ -301,19 +404,66 @@ class McpInstrumentor(BaseInstrumentor):
                         SpanAttributes.TRACELOOP_ENTITY_INPUT, str(clean_input)
                     )
 
-            return await self._execute_and_handle_result(
-                span, method, args, kwargs, wrapped, clean_output=True
-            )
+            try:
+                result = await self._execute_and_handle_result(
+                    span, method, args, kwargs, wrapped, clean_output=True
+                )
+            except Exception as exc:
+                if client_operation_duration_histogram is not None:
+                    duration = time.time() - start_time
+                    metric_attrs = {
+                        SpanAttributes.MCP_METHOD_NAME: method,
+                        "error.type": type(exc).__name__,
+                    }
+                    if entity_name != method:
+                        metric_attrs["gen_ai.tool.name"] = entity_name
+                    client_operation_duration_histogram.record(
+                        duration, attributes=metric_attrs
+                    )
+                raise
+            if client_operation_duration_histogram is not None:
+                duration = time.time() - start_time
+                metric_attrs = {SpanAttributes.MCP_METHOD_NAME: method}
+                if entity_name != method:
+                    metric_attrs["gen_ai.tool.name"] = entity_name
+                client_operation_duration_histogram.record(duration, attributes=metric_attrs)
+            return result
 
-    async def _handle_mcp_method(self, tracer, method, args, kwargs, wrapped):
+    async def _handle_mcp_method(
+        self,
+        tracer,
+        method,
+        args,
+        kwargs,
+        wrapped,
+        client_operation_duration_histogram=None,
+    ):
         """Handle non-tool MCP methods with simple serialization"""
+        start_time = time.time()
         with tracer.start_as_current_span(f"{method}.mcp") as span:
             span.set_attribute(
                 SpanAttributes.TRACELOOP_ENTITY_INPUT, f"{serialize(args[0])}"
             )
-            return await self._execute_and_handle_result(
-                span, method, args, kwargs, wrapped, clean_output=False
-            )
+            try:
+                result = await self._execute_and_handle_result(
+                    span, method, args, kwargs, wrapped, clean_output=False
+                )
+            except Exception as exc:
+                if client_operation_duration_histogram is not None:
+                    duration = time.time() - start_time
+                    metric_attrs = {
+                        SpanAttributes.MCP_METHOD_NAME: method,
+                        "error.type": type(exc).__name__,
+                    }
+                    client_operation_duration_histogram.record(
+                        duration, attributes=metric_attrs
+                    )
+                raise
+            if client_operation_duration_histogram is not None:
+                duration = time.time() - start_time
+                metric_attrs = {SpanAttributes.MCP_METHOD_NAME: method}
+                client_operation_duration_histogram.record(duration, attributes=metric_attrs)
+            return result
 
     async def _execute_and_handle_result(
         self, span, method, args, kwargs, wrapped, clean_output=False
