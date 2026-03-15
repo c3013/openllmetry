@@ -109,7 +109,6 @@ class FastMCPInstrumentor:
             entity_name = tool_key if tool_key else "unknown_tool"
 
             # Create parent server.mcp span
-            server_start_time = time.time()
             with self._tracer.start_as_current_span("mcp.server") as mcp_span:
                 mcp_span.set_attribute(SpanAttributes.TRACELOOP_SPAN_KIND, "server")
                 mcp_span.set_attribute(SpanAttributes.TRACELOOP_ENTITY_NAME, "mcp.server")
@@ -201,11 +200,6 @@ class FastMCPInstrumentor:
                                 "gen_ai.tool.name": entity_name,
                             },
                         )
-
-                # Record server session duration metric
-                if self._server_session_duration_histogram is not None:
-                    session_duration = time.time() - server_start_time
-                    self._server_session_duration_histogram.record(session_duration)
 
                 return result
 

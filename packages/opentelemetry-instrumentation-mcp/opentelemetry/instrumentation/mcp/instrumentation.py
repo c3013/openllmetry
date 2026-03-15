@@ -146,6 +146,22 @@ class McpInstrumentor(BaseInstrumentor):
         )
         register_post_import_hook(
             lambda _: wrap_function_wrapper(
+                "mcp.server.session",
+                "ServerSession.__aenter__",
+                self._server_session_enter_wrapper(server_session_duration_histogram),
+            ),
+            "mcp.server.session",
+        )
+        register_post_import_hook(
+            lambda _: wrap_function_wrapper(
+                "mcp.server.session",
+                "ServerSession.__aexit__",
+                self._server_session_exit_wrapper(server_session_duration_histogram),
+            ),
+            "mcp.server.session",
+        )
+        register_post_import_hook(
+            lambda _: wrap_function_wrapper(
                 "mcp.client.streamable_http",
                 "streamablehttp_client",
                 self._transport_wrapper(tracer),
@@ -227,6 +243,47 @@ class McpInstrumentor(BaseInstrumentor):
                     "_incoming_message_stream_writer",
                     ContextSavingStreamWriter(writer, tracer),
                 )
+
+        return traced_method
+
+    def _server_session_enter_wrapper(self, server_session_duration_histogram=None):
+        """Wrapper for ServerSession.__aenter__ to start tracking server session duration."""
+
+        @dont_throw
+        async def traced_method(wrapped, instance, args, kwargs):
+            result = await wrapped(*args, **kwargs)
+            setattr(instance, "_tracing_session_start_time", time.time())
+            setattr(
+                instance,
+                "_tracing_session_duration_histogram",
+                server_session_duration_histogram,
+            )
+            return result
+
+        return traced_method
+
+    def _server_session_exit_wrapper(self, server_session_duration_histogram=None):
+        """Wrapper for ServerSession.__aexit__ to record server session duration."""
+
+        @dont_throw
+        async def traced_method(wrapped, instance, args, kwargs):
+            session_start = getattr(instance, "_tracing_session_start_time", None)
+            histogram = getattr(
+                instance,
+                "_tracing_session_duration_histogram",
+                server_session_duration_histogram,
+            )
+            if session_start is not None and histogram is not None:
+                duration = time.time() - session_start
+                exc_type = args[0] if args else None
+                if exc_type is not None:
+                    histogram.record(
+                        duration,
+                        attributes={"error.type": exc_type.__name__},
+                    )
+                else:
+                    histogram.record(duration)
+            return await wrapped(*args, **kwargs)
 
         return traced_method
 
@@ -313,46 +370,29 @@ class McpInstrumentor(BaseInstrumentor):
 
         @dont_throw
         async def traced_method(wrapped, instance, args, kwargs):
+            exc_type = args[0] if args else None
+            session_start = getattr(instance, "_tracing_session_start_time", None)
+            histogram = getattr(
+                instance,
+                "_tracing_session_duration_histogram",
+                client_session_duration_histogram,
+            )
+            if session_start is not None and histogram is not None:
+                duration = time.time() - session_start
+                metric_attrs = (
+                    {"error.type": exc_type.__name__} if exc_type is not None else {}
+                )
+                histogram.record(duration, attributes=metric_attrs)
+
+            context_manager = getattr(
+                instance, "_tracing_session_context_manager", None
+            )
             try:
-                # Call the original method first
                 result = await wrapped(*args, **kwargs)
-
-                # Record client session duration metric
-                session_start = getattr(instance, "_tracing_session_start_time", None)
-                histogram = getattr(
-                    instance,
-                    "_tracing_session_duration_histogram",
-                    client_session_duration_histogram,
-                )
-                if session_start is not None and histogram is not None:
-                    duration = time.time() - session_start
-                    histogram.record(duration)
-
-                # End the session span context manager
-                context_manager = getattr(
-                    instance, "_tracing_session_context_manager", None
-                )
                 if context_manager:
                     context_manager.__exit__(None, None, None)
-
                 return result
             except Exception as e:
-                # Record client session duration metric on error
-                session_start = getattr(instance, "_tracing_session_start_time", None)
-                histogram = getattr(
-                    instance,
-                    "_tracing_session_duration_histogram",
-                    client_session_duration_histogram,
-                )
-                if session_start is not None and histogram is not None:
-                    duration = time.time() - session_start
-                    histogram.record(
-                        duration, attributes={"error.type": type(e).__name__}
-                    )
-                # End the session span context manager with exception info
-                context_manager = getattr(
-                    instance, "_tracing_session_context_manager", None
-                )
                 if context_manager:
                     context_manager.__exit__(type(e), e, e.__traceback__)
                 raise
