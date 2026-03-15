@@ -62,9 +62,11 @@ class FastMCPInstrumentor:
 
     def uninstrument(self):
         """Remove FastMCP-specific instrumentation."""
-        # Note: wrapt doesn't provide a clean way to unwrap post-import hooks
-        # This is a limitation we'll need to document
-        pass
+        try:
+            from opentelemetry.instrumentation.utils import unwrap
+            unwrap("fastmcp.server.server.FastMCP", "call_tool")
+        except Exception:
+            pass
 
     def _fastmcp_init_wrapper(self):
         """Create wrapper for FastMCP initialization to capture server name."""
@@ -85,6 +87,11 @@ class FastMCPInstrumentor:
         """Create wrapper for FastMCP tool execution."""
         async def traced_method(wrapped, instance, args, kwargs):
             if not self._tracer:
+                return await wrapped(*args, **kwargs)
+
+            # fastmcp calls call_tool internally with run_middleware=False from the middleware
+            # chain. Skip tracing and metrics for these inner calls to avoid double-recording.
+            if not kwargs.get('run_middleware', True):
                 return await wrapped(*args, **kwargs)
 
             # Extract tool name from arguments
@@ -155,7 +162,7 @@ class FastMCPInstrumentor:
                                 attributes={
                                     SpanAttributes.MCP_METHOD_NAME: "tools/call",
                                     "gen_ai.tool.name": entity_name,
-                                    "error.type": type(e).__name__,
+                                    ERROR_TYPE: type(e).__name__,
                                 },
                             )
                         raise

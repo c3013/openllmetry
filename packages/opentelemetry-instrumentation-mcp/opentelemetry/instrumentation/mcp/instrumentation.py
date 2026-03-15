@@ -29,6 +29,14 @@ _MCP_OPERATION_DURATION_BUCKETS = [
 _instruments = ("mcp >= 1.6.0",)
 
 
+def _safe_unwrap(module_name: str, attr_name: str) -> None:
+    """Unwrap a wrapped function, ignoring errors if not wrapped or module not found."""
+    try:
+        unwrap(module_name, attr_name)
+    except Exception:
+        pass
+
+
 class McpInstrumentor(BaseInstrumentor):
     def __init__(self, exception_logger=None):
         super().__init__()
@@ -183,8 +191,14 @@ class McpInstrumentor(BaseInstrumentor):
         )
 
     def _uninstrument(self, **kwargs):
-        unwrap("mcp.client.stdio", "stdio_client")
-        unwrap("mcp.server.stdio", "stdio_server")
+        _safe_unwrap("mcp.client.stdio", "stdio_client")
+        _safe_unwrap("mcp.server.stdio", "stdio_server")
+        _safe_unwrap("mcp.server.session.ServerSession", "__aenter__")
+        _safe_unwrap("mcp.server.session.ServerSession", "__aexit__")
+        _safe_unwrap("mcp.server.session.ServerSession", "__init__")
+        _safe_unwrap("mcp.shared.session.BaseSession", "send_request")
+        _safe_unwrap("fastmcp.client.client.Client", "__aenter__")
+        _safe_unwrap("fastmcp.client.client.Client", "__aexit__")
         self._fastmcp_instrumentor.uninstrument()
 
     def _transport_wrapper(self, tracer):
@@ -279,7 +293,7 @@ class McpInstrumentor(BaseInstrumentor):
                 if exc_type is not None:
                     histogram.record(
                         duration,
-                        attributes={"error.type": exc_type.__name__},
+                        attributes={ERROR_TYPE: exc_type.__name__},
                     )
                 else:
                     histogram.record(duration)
@@ -380,7 +394,7 @@ class McpInstrumentor(BaseInstrumentor):
             if session_start is not None and histogram is not None:
                 duration = time.time() - session_start
                 metric_attrs = (
-                    {"error.type": exc_type.__name__} if exc_type is not None else {}
+                    {ERROR_TYPE: exc_type.__name__} if exc_type is not None else {}
                 )
                 histogram.record(duration, attributes=metric_attrs)
 
@@ -453,7 +467,7 @@ class McpInstrumentor(BaseInstrumentor):
                     duration = time.time() - start_time
                     metric_attrs = {
                         SpanAttributes.MCP_METHOD_NAME: method,
-                        "error.type": type(exc).__name__,
+                        ERROR_TYPE: type(exc).__name__,
                     }
                     if entity_name != method:
                         metric_attrs["gen_ai.tool.name"] = entity_name
@@ -493,7 +507,7 @@ class McpInstrumentor(BaseInstrumentor):
                     duration = time.time() - start_time
                     metric_attrs = {
                         SpanAttributes.MCP_METHOD_NAME: method,
-                        "error.type": type(exc).__name__,
+                        ERROR_TYPE: type(exc).__name__,
                     }
                     client_operation_duration_histogram.record(
                         duration, attributes=metric_attrs

@@ -80,7 +80,7 @@ async def test_client_session_duration_metric(reader) -> None:
 
 @pytest.mark.asyncio
 async def test_server_operation_duration_metric(reader) -> None:
-    """Test that mcp.server.operation.duration histogram is recorded for server-side tool calls."""
+    """Test that mcp.server.operation.duration histogram records exactly once per tool call."""
     from fastmcp import FastMCP, Client
 
     server = FastMCP("server-op-metrics-server")
@@ -110,6 +110,12 @@ async def test_server_operation_duration_metric(reader) -> None:
                         assert "mcp.method.name" in dp.attributes
                         assert dp.attributes["mcp.method.name"] == "tools/call"
                         assert "gen_ai.tool.name" in dp.attributes
+                        # Each specific tool should be recorded exactly once per call
+                        if dp.attributes.get("gen_ai.tool.name") == "multiply":
+                            assert dp.count == 1, (
+                                f"Expected count=1 for 'multiply' tool call, got {dp.count}. "
+                                "Possible double-recording due to run_middleware=False call."
+                            )
 
     assert found_server_op_metric, (
         f"Expected metric '{Meters.MCP_SERVER_OPERATION_DURATION}' was not found. "
