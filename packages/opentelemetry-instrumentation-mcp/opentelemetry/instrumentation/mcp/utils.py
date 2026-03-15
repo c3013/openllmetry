@@ -2,11 +2,16 @@
 
 import asyncio
 import logging
+import os
 import traceback
 
 
 class Config:
     exception_logger = None
+
+
+def is_metrics_enabled() -> bool:
+    return (os.getenv("TRACELOOP_METRICS_ENABLED") or "true").lower() == "true"
 
 
 def dont_throw(func):

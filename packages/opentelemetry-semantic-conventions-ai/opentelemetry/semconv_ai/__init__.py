@@ -60,6 +60,11 @@ class Meters:
     LLM_WATSONX_COMPLETIONS_RESPONSES = "llm.watsonx.completions.responses"
     LLM_WATSONX_COMPLETIONS_TOKENS = "llm.watsonx.completions.tokens"
 
+    MCP_CLIENT_OPERATION_DURATION = "mcp.client.operation.duration"
+    MCP_SERVER_OPERATION_DURATION = "mcp.server.operation.duration"
+    MCP_CLIENT_SESSION_DURATION = "mcp.client.session.duration"
+    MCP_SERVER_SESSION_DURATION = "mcp.server.session.duration"
+
 
 class SpanAttributes:
     # GenAI Usage Cache Attributes (missing from incubating semantic conventions)
